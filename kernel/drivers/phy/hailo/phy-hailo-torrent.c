@@ -13,6 +13,7 @@
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/io.h>
+#include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/pm_runtime.h>
 #include <linux/reset.h>
@@ -483,7 +484,7 @@ err_disable_usb_pclk:
 	return ret;
 }
 
-static int hailo_torrent_remove(struct platform_device *pdev)
+static void hailo_torrent_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct hailo_torrent *data = dev_get_drvdata(dev);
@@ -497,8 +498,6 @@ static int hailo_torrent_remove(struct platform_device *pdev)
 	pm_runtime_set_suspended(dev);
 	pm_runtime_disable(dev);
 	platform_set_drvdata(pdev, NULL);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

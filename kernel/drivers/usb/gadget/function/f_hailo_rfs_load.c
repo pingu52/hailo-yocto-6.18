@@ -366,7 +366,7 @@ static void hailo_rfs_load_status_timer_fn(struct timer_list *t)
     if (!t) 
         return;
         
-    rfs = from_timer(rfs, t, status_timer);
+    rfs = timer_container_of(rfs, t, status_timer);
     
     /* Safety check: validate rfs pointer and unbinding flag */
     if (!rfs || atomic_read(&rfs->unbinding))
@@ -590,7 +590,7 @@ static void hailo_rfs_load_file_work_fn(struct work_struct *work)
                     inode_lock(inode);
                     newattrs.ia_valid = ATTR_MODE;
                     newattrs.ia_mode = 0644;
-                    notify_change(&init_user_ns, rfs->rfs_file->f_path.dentry, &newattrs, NULL);
+                    notify_change(&nop_mnt_idmap, rfs->rfs_file->f_path.dentry, &newattrs, NULL);
                     inode_unlock(inode);
                 }
 
@@ -1018,7 +1018,7 @@ static int hailo_rfs_load_set_alt(struct usb_function *f, unsigned intf, unsigne
         usb_ep_disable(rfs->intr_in_ep);
 
     /* Stop status timer during reconfiguration */
-    del_timer_sync(&rfs->status_timer);
+    timer_delete_sync(&rfs->status_timer);
 
     /* Configure bulk OUT endpoint */
     ret = config_ep_by_speed(cdev->gadget, f, rfs->bulk_out_ep);
@@ -1097,7 +1097,7 @@ static void hailo_rfs_load_disable(struct usb_function *f)
     atomic_set(&rfs->unbinding, 1);
     
     /* Stop status timer and ensure it's completely stopped */
-    del_timer_sync(&rfs->status_timer);
+    timer_delete_sync(&rfs->status_timer);
     
     /* Add memory barrier to ensure timer sees unbinding flag */
     smp_mb();
@@ -1273,7 +1273,7 @@ static void hailo_rfs_load_unbind(struct usb_configuration *c, struct usb_functi
     atomic_set(&rfs->unbinding, 1);
     
     /* Stop status timer to prevent further interrupt queuing during cleanup */
-    del_timer_sync(&rfs->status_timer);
+    timer_delete_sync(&rfs->status_timer);
     
     /* Reset atomic counter and ensure no more interrupt requests are queued */
     atomic_set(&rfs->intr_req_queued, 0);

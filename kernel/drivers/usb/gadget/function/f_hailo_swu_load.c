@@ -382,7 +382,7 @@ static void hailo_swu_load_status_timer_fn(struct timer_list *t)
     if (!t) 
         return;
         
-    swu = from_timer(swu, t, status_timer);
+    swu = timer_container_of(swu, t, status_timer);
     
     /* Safety check: validate swu pointer and unbinding flag */
     if (!swu || atomic_read(&swu->unbinding))
@@ -1157,7 +1157,7 @@ static int hailo_swu_load_set_alt(struct usb_function *f, unsigned intf, unsigne
         usb_ep_disable(swu->intr_in_ep);
 
     /* Stop status timer during reconfiguration */
-    del_timer_sync(&swu->status_timer);
+    timer_delete_sync(&swu->status_timer);
 
     /* Configure bulk OUT endpoint */
     ret = config_ep_by_speed(cdev->gadget, f, swu->bulk_out_ep);
@@ -1236,7 +1236,7 @@ static void hailo_swu_load_disable(struct usb_function *f)
     atomic_set(&swu->unbinding, 1);
     
     /* Stop status timer and ensure it's completely stopped */
-    del_timer_sync(&swu->status_timer);
+    timer_delete_sync(&swu->status_timer);
     
     /* Add memory barrier to ensure timer sees unbinding flag */
     smp_mb();
@@ -1412,7 +1412,7 @@ static void hailo_swu_load_unbind(struct usb_configuration *c, struct usb_functi
     atomic_set(&swu->unbinding, 1);
     
     /* Stop status timer to prevent further interrupt queuing during cleanup */
-    del_timer_sync(&swu->status_timer);
+    timer_delete_sync(&swu->status_timer);
     
     /* Reset atomic counter and ensure no more interrupt requests are queued */
     atomic_set(&swu->intr_req_queued, 0);
