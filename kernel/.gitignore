@@ -34,3 +34,8 @@ scripts/mod/devicetable-offsets.s
 .tmp_*
 .*.d
 *.dtb
+*.dtbo
+.*.d.dtc.tmp
+.*.d.pre.tmp
+.*.dts.tmp
+dtbs-list

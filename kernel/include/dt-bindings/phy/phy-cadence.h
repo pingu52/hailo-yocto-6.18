@@ -11,6 +11,13 @@
 #define CDNS_SERDES_INTERNAL_SSC	2
 
 /* Torrent */
+/* Hailo DT bindings use the pre-unified TORRENT_SERDES_* names
+ * (upstream 6.18 renames them to CDNS_SERDES_*); keep both so the
+ * Hailo-15 device trees build unchanged. */
+#define TORRENT_SERDES_NO_SSC		0
+#define TORRENT_SERDES_EXTERNAL_SSC	1
+#define TORRENT_SERDES_INTERNAL_SSC	2
+
 #define CDNS_TORRENT_REFCLK_DRIVER      0
 #define CDNS_TORRENT_DERIVED_REFCLK	1
 #define CDNS_TORRENT_RECEIVED_REFCLK	2
