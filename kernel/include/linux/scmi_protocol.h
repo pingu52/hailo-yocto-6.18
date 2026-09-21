@@ -13,9 +13,14 @@
 #include <linux/notifier.h>
 #include <linux/types.h>
 
+#if IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL)
+
+#include <linux/soc/hailo/scmi_hailo_protocol.h>
+
+#endif /* IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL) */
 #define SCMI_MAX_STR_SIZE		64
 #define SCMI_SHORT_NAME_MAX_SIZE	16
-#define SCMI_MAX_NUM_RATES		16
+#define SCMI_MAX_NUM_RATES		128
 
 /**
  * struct scmi_revision_info - version information structure
@@ -609,6 +614,34 @@ struct scmi_voltage_proto_ops {
 			 s32 *volt_uV);
 };
 
+#if IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL)
+
+struct scmi_hailo_proto_ops {
+	int (*get_boot_info)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_boot_info_p2a *info);
+	int (*get_fuse_info)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_fuse_info_p2a *info);
+	int (*set_eth_rmii)(const struct scmi_protocol_handle *ph);
+	int (*start_measure)(const struct scmi_protocol_handle *ph, struct scmi_hailo_noc_start_measure_a2p *params);
+	int (*stop_measure)(const struct scmi_protocol_handle *ph, struct scmi_hailo_noc_stop_measure_p2a *output);
+	int (*send_boot_success_ind)(const struct scmi_protocol_handle *ph, struct scmi_hailo_boot_success_indication_a2p *params);
+	int (*send_swupdate_ind)(const struct scmi_protocol_handle *ph);
+	int (*send_components_version)(const struct scmi_protocol_handle *ph, struct scmi_hailo_send_components_version_p2a *info);
+	int (*get_jtag_selector)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_jtag_p2a *info);
+	int (*set_jtag_selector)(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_jtag_a2p *params);
+	int (*set_i2s_source_clk)(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_i2s_source_clock_a2p *params);
+	int (*set_spi_interrupt_forwarding)(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_spi_interrupt_forwarding_a2p *params);
+	int (*get_mbist_subservers_status)(const struct scmi_protocol_handle *ph, struct scmi_hailo_mbist_subservers_status_p2a *params);
+	int (*set_throttling_mode)(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_throttling_mode_a2p *params);
+	int (*get_throttling_mode)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_throttling_mode_a2p *params, struct scmi_hailo_get_throttling_mode_p2a *info);
+	int (*set_source_clock)(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_source_clock_a2p *params);
+	int (*get_source_clock)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_source_clock_a2p *params, struct scmi_hailo_get_source_clock_p2a *info);
+	int (*get_identification_attributes)(const struct scmi_protocol_handle *ph, struct scmi_hailo_identification_attributes_p2a *params);
+	int (*get_sku_id)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_sku_id_p2a *params);
+	int (*send_host_current_limit)(const struct scmi_protocol_handle *ph, struct scmi_hailo_send_host_current_limit_a2p *params);
+};
+
+#endif /* IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL) */
+
+
 /**
  * struct scmi_powercap_info  - Describe one available Powercap domain
  *
@@ -926,6 +959,7 @@ enum scmi_std_protocol {
 	SCMI_PROTOCOL_VOLTAGE = 0x17,
 	SCMI_PROTOCOL_POWERCAP = 0x18,
 	SCMI_PROTOCOL_PINCTRL = 0x19,
+	SCMI_PROTOCOL_HAILO,
 };
 
 enum scmi_system_events {

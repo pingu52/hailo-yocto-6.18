@@ -85,6 +85,8 @@ obj-$(CONFIG_XGENE_DMA) += xgene-dma.o
 obj-$(CONFIG_ST_FDMA) += st_fdma.o
 obj-$(CONFIG_FSL_DPAA2_QDMA) += fsl-dpaa2-qdma/
 obj-$(CONFIG_INTEL_LDMA) += lgm/
+obj-$(CONFIG_HAILO15_GP_VDMA) += hailo15_gp_vdma.o
+obj-$(CONFIG_HAILO15_GP_MEMCOPY) += hailo15_gp_memcopy.o
 
 obj-y += amd/
 obj-y += mediatek/

@@ -56,6 +56,11 @@ obj-$(CONFIG_BCM_VK)		+= bcm-vk/
 obj-y				+= cardreader/
 obj-$(CONFIG_PVPANIC)   	+= pvpanic/
 obj-$(CONFIG_UACCE)		+= uacce/
+# Hailo15 EVB CPLD I2C board management driver and device tree overlays
+obj-$(CONFIG_ARCH_HAILO15)	+= hailo15-evb-cpld.o
+obj-$(CONFIG_ARCH_HAILO15)	+= hailo15_evb_cpld_of_evb_rev1.dtb.o
+obj-$(CONFIG_ARCH_HAILO15)	+= hailo15_evb_cpld_of_evb_rev2.dtb.o
+obj-$(CONFIG_ARCH_HAILO15)	+= hailo15_evb_cpld_of_evb_sdio8bit.dtb.o
 obj-$(CONFIG_XILINX_SDFEC)	+= xilinx_sdfec.o
 obj-$(CONFIG_HISI_HIKEY_USB)	+= hisi_hikey_usb.o
 obj-$(CONFIG_NTSYNC)		+= ntsync.o

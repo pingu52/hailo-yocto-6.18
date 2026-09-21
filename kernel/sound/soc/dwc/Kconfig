@@ -21,3 +21,14 @@ config SND_DESIGNWARE_PCM
 	 DMA support.
 
 endmenu
+
+config SND_DESIGNWARE_I2S_HAILO
+	bool "Hailo SoC I2S glue logic device driver"
+	 Say Y or M if you want to add support for I2S driver for Synopsys designware I2S devices in Hailo SoC.
+
+
+config SND_DESIGNWARE_HAILO15_STATS
+	bool "PCM PIO Hailo stats"
+	 Say Y if you want to get Synopsys I2S Device IRQ execution and interval statistics for Hailo SoC.
+
+

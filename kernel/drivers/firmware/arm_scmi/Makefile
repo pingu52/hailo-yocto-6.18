@@ -18,3 +18,5 @@ obj-$(CONFIG_ARM_SCMI_PROTOCOL) += scmi-core.o
 obj-$(CONFIG_ARM_SCMI_PROTOCOL) += scmi-module.o
 
 obj-$(CONFIG_ARM_SCMI_POWER_CONTROL) += scmi_power_control.o
+
+scmi-protocols-$(CONFIG_HAILO_SCMI_PROTOCOL) += scmi_hailo_protocol.o

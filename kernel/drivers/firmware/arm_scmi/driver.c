@@ -38,6 +38,9 @@
 #include <linux/xarray.h>
 
 #include "common.h"
+#ifdef CONFIG_ARCH_HAILO15
+#include <dt-bindings/soc/hailo15_scu_fw_version.h>
+#endif /* CONFIG_ARCH_HAILO15 */
 #include "notify.h"
 #include "quirks.h"
 
@@ -3151,6 +3154,7 @@ static int scmi_probe(struct platform_device *pdev)
 	bool coex = IS_ENABLED(CONFIG_ARM_SCMI_RAW_MODE_SUPPORT_COEX);
 	struct device *dev = &pdev->dev;
 	struct device_node *child, *np = dev->of_node;
+	u32 fw_ver;
 
 	desc = scmi_transport_setup(dev);
 	if (!desc) {
@@ -3256,6 +3260,28 @@ static int scmi_probe(struct platform_device *pdev)
 			return 0;
 		}
 		goto raw_mode_cleanup;
+	}
+	/*
+	 * optionally check match between the expected firmware version
+	 * against the actual version
+	 */
+	if (!of_property_read_u32(np, "fw-ver", &fw_ver)) {
+#ifdef CONFIG_ARCH_HAILO15
+		if (SCU_FW_SCMI_VERSION != handle->version->impl_ver) {
+			dev_err(dev, "Firmware version mismatch: linux(kernel)=0x%x, fw=0x%x\n",
+				SCU_FW_SCMI_VERSION,
+				handle->version->impl_ver);
+			panic("Version mismatch!");
+			goto raw_mode_cleanup;
+		}
+#endif
+		if (fw_ver != handle->version->impl_ver) {
+			dev_err(dev, "Firmware version mismatch: linux(devicetree)=0x%x, fw=0x%x\n",
+				fw_ver,
+				handle->version->impl_ver);
+			panic("Version mismatch!");
+			goto raw_mode_cleanup;
+		}
 	}
 
 	mutex_lock(&scmi_list_mutex);
@@ -3465,6 +3491,10 @@ static int __init scmi_driver_init(void)
 	scmi_system_register();
 	scmi_powercap_register();
 	scmi_pinctrl_register();
+#if IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL)
+	scmi_hailo_register();
+#endif /* IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL) */
+
 
 	return platform_driver_register(&scmi_driver);
 }
@@ -3483,6 +3513,10 @@ static void __exit scmi_driver_exit(void)
 	scmi_system_unregister();
 	scmi_powercap_unregister();
 	scmi_pinctrl_unregister();
+#if IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL)
+	scmi_hailo_unregister();
+#endif /* IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL) */
+
 
 	platform_driver_unregister(&scmi_driver);
 
