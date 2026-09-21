@@ -1,24 +1,34 @@
 # Hailo-15 6.18 kernel config fragment (porting verification build)
 # Base: 6.18 arm64 defconfig + Hailo-15 options.
-# Options mirror meta-hailo-soc 1.12.1 defconfig Hailo entries, kept buildable
-# on 6.18 (CMA_DEBUGFS rework, SCMI Hailo protocol, etc.).
-CONFIG_ARCH_HAILO15=y
-CONFIG_ARM64_AC57=y
+# Option values mirror meta-hailo-soc 1.12.1 defconfig (hailo-ai v1.12.1),
+# dropped symbols that do not exist in 6.18 Kconfig (ARM64_AC57), kept
+# buildable on 6.18 (SCMI Hailo protocol, CMA rework, etc.).
+#
+# NOTE: applied with 05-apply-fragment.py (whole-file in-place rewrite).
 
-# Firmware / SCMI
+CONFIG_ARCH_HAILO15=y
+
+# Firmware / SCMI (1.12.1 uses mailbox transport: SMC transport NOT set)
 CONFIG_ARM_SCMI_PROTOCOL=y
 CONFIG_ARM_SCMI_CPUFREQ=y
 CONFIG_SENSORS_ARM_SCMI=y
 CONFIG_COMMON_CLK_SCMI=y
-CONFIG_ARM_SCMI_TRANSPORT_SMC=y
+CONFIG_ARM_SCMI_TRANSPORT_MAILBOX=y
+# CONFIG_ARM_SCMI_TRANSPORT_SMC is not set
 CONFIG_HAILO_SCMI_PROTOCOL=y
+CONFIG_HAILO_SCU_LOG=y
 
-# SoC / pinctrl / PWM
+# SoC / pinctrl / PWM / EDAC
 CONFIG_SOC_HAILO=y
 CONFIG_PINCTRL=y
 CONFIG_PINCTRL_HAILO15=y
 CONFIG_PWM=y
 CONFIG_PWM_HAILO15=y
+CONFIG_EDAC=y
+CONFIG_EDAC_HAILO15_CDNS=y
+
+# GPIO (Hailo CMSDK board)
+CONFIG_GPIO_CMSDK=y
 
 # DMA / CMA
 CONFIG_DMADEVICES=y
@@ -35,21 +45,22 @@ CONFIG_CMA_SIZE_MBYTES=32
 CONFIG_DRM=y
 CONFIG_DRM_HAILO=y
 
-# USB
+# PERF
+CONFIG_HAILO_NOC_PMU=y
+
+# USB (values aligned to 1.12.1: cdns3 host =y, gadget =y)
 CONFIG_USB=y
+CONFIG_USB_CDNS_SUPPORT=y
 CONFIG_USB_CDNS3=y
+# 1.12.1 had USB_CDNSP_PCI=y which gates the `if USB_CDNSP_PCI` block that
+# registers USB_CDNS3_HAILO; without it that symbol is not in the Kconfig tree.
+CONFIG_USB_CDNSP_PCI=y
+CONFIG_USB_CDNS3_GADGET=y
 CONFIG_USB_CDNS3_HAILO=y
 CONFIG_USB_GADGET=y
-CONFIG_USB_LIBCOMPOSITE=y
+CONFIG_USB_LIBCOMPOSITE=m
 CONFIG_USB_F_HAILO_RFS_LOAD=m
 CONFIG_USB_F_HAILO_SWU_LOAD=m
 CONFIG_USB_HAILO_GADGET=m
-
-# EDAC
-CONFIG_EDAC=y
-CONFIG_EDAC_HAILO15_CDNS=y
-
-# PERF
-CONFIG_HAILO_NOC_PMU=y
 
 # misc: hailo15-evb-cpld builds under ARCH_HAILO15 (no dedicated Kconfig option in 1.12.1)
