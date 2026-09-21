@@ -193,9 +193,12 @@ static const struct scmi_hailo_proto_ops hailo_proto_ops = {
 
 static int scmi_hailo_protocol_init(const struct scmi_protocol_handle *ph)
 {
+	int ret;
 	u32 version;
 
-	ph->xops->version_get(ph, &version);
+	ret = ph->xops->version_get(ph, &version);
+	if (ret)
+		return ret;
 
 	if (version != SCU_FW_SCMI_VERSION) {
 		dev_err(ph->dev, "Hailo Protocol version mismatch! Expected: %x but received received %x", SCU_FW_SCMI_VERSION, version);
@@ -205,7 +208,7 @@ static int scmi_hailo_protocol_init(const struct scmi_protocol_handle *ph)
 	dev_info(ph->dev, "Hailo SCMI Protocol Version %d.%d.%d\n",
 		SCU_FW_MAJOR, SCU_FW_MINOR, SCU_FW_REVISION);
 
-	return ph->set_priv(ph, NULL);
+	return ph->set_priv(ph, NULL, version);
 }
 
 static int hailo_scmi_get_num_sources(const struct scmi_protocol_handle *ph)

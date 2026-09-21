@@ -597,8 +597,5 @@ endif # EDAC
 config EDAC_HAILO15_CDNS
 	bool "Hailo15 EDAC driver for Cadence memory controller"
 	depends on ARCH_HAILO15
-
-
+	help
 	  Support error detection and correction for Hailo15 Cadence memory controller.
-
-

@@ -244,14 +244,6 @@ config ARM64_BRBE
 	  type, branch privilege level etc.
 
 config ARM_DMC620_PMU
-config HAILO_NOC_PMU
-	tristate "Hailo-15 NoC performance monitor"
-	depends on ARCH_HAILO15
-
-
-	  Provides support for the NoC performance monitor in Hailo-15.
-
-
 	tristate "Enable PMU support for the ARM DMC-620 memory controller"
 	depends on (ARM64 && ACPI) || COMPILE_TEST
 	help
@@ -319,4 +311,10 @@ config MARVELL_PEM_PMU
 	  Enable support for PCIe Interface performance monitoring
 	  on Marvell platform.
 
+
+config HAILO_NOC_PMU
+	tristate "Hailo-15 NoC performance monitor"
+	depends on ARCH_HAILO15
+	help
+	  Provides support for the NoC performance monitor in Hailo-15.
 endmenu
