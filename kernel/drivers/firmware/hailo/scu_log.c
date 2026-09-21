@@ -11,6 +11,7 @@
 #include <linux/io.h>
 #include <linux/notifier.h>
 #include <linux/panic_notifier.h>
+#include <linux/platform_device.h>
 
 struct scu_log_data {
 	struct resource *log_res;
@@ -156,13 +157,13 @@ static int scu_log_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int scu_log_remove(struct platform_device *pdev)
+/* 6.18: platform remove returns void (was int in 5.15) */
+static void scu_log_remove(struct platform_device *pdev)
 {
 	struct scu_log_data *data = platform_get_drvdata(pdev);
 	atomic_notifier_chain_unregister(&panic_notifier_list,
 					 &data->panic_block);
 	misc_deregister(&data->miscdev);
-	return 0;
 }
 
 static const struct of_device_id scu_log_of_match[] = {

@@ -10,6 +10,7 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/gpio/driver.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/of_platform.h>
 #include <linux/i2c.h>
@@ -162,11 +163,13 @@ static void cmsdk_gpio_set_value_inner(struct cmsdk_gpio *cmsdk_gpio,
 	raw_spin_unlock_irqrestore(&cmsdk_gpio->lock, flags);
 }
 
-static void cmsdk_gpio_set_value(struct gpio_chip *gc, unsigned int offset,
-				 int value)
+/* 6.18: gpio_chip.set returns int (was void in 5.15) */
+static int cmsdk_gpio_set_value(struct gpio_chip *gc, unsigned int offset,
+				int value)
 {
 	struct cmsdk_gpio *cmsdk_gpio = gpiochip_get_data(gc);
 	cmsdk_gpio_set_value_inner(cmsdk_gpio, offset, value);
+	return 0;
 }
 
 static int cmsdk_gpio_get_direction(struct gpio_chip *gc, unsigned int offset)
@@ -232,11 +235,12 @@ static int cmsdk_gpio_direction_input(struct gpio_chip *gc, unsigned int offset)
 	/* Sets the GPIO direction */
 	cmsdk_gpio_set_direction_input(cmsdk_gpio, offset);
 
-	err = pinctrl_gpio_direction_input(gc->base + offset);
+	/* 6.18: pinctrl_gpio_direction_input(gc, offset) - was (gpio) in 5.15 */
+	err = pinctrl_gpio_direction_input(gc, offset);
 	if (err < 0) {
 		/*
-		* Revert the stage: Set in the GPIO IP register the direction to input
-		*/
+		 * Revert the stage: Set in the GPIO IP register the direction to input
+		 */
 		cmsdk_gpio_set_direction_output(cmsdk_gpio, offset);
 		return err;
 	}
@@ -255,7 +259,8 @@ static int cmsdk_gpio_direction_output(struct gpio_chip *gc,
 	struct cmsdk_gpio *cmsdk_gpio = gpiochip_get_data(gc);
 	int err;
 
-	err = pinctrl_gpio_direction_output(gc->base + offset);
+	/* 6.18: pinctrl_gpio_direction_output(gc, offset) - was (gpio) in 5.15 */
+	err = pinctrl_gpio_direction_output(gc, offset);
 	if (err < 0) {
 		return err;
 	}
