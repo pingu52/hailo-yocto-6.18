@@ -14,6 +14,9 @@
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/of_address.h>
+
+/* 6.18: no longer pulled in transitively */
+#include <linux/platform_device.h>
 #include <linux/of_dma.h>
 #include <linux/of_platform.h>
 #include <linux/of_irq.h>
@@ -729,7 +732,8 @@ static void hailo15_gp_vdma_free_irq(struct hailo15_gp_vdma_device *hdev)
 	free_irq(hdev->irq, hdev);
 }
 
-static int hailo15_gp_vdma_remove(struct platform_device *op)
+/* 6.18: platform_driver.remove is void */
+static void hailo15_gp_vdma_remove(struct platform_device *op)
 {
 	struct hailo15_gp_vdma_device *hdev;
 	unsigned int i;
@@ -746,8 +750,6 @@ static int hailo15_gp_vdma_remove(struct platform_device *op)
 
 	iounmap(hdev->regs);
 	kfree(hdev);
-
-	return 0;
 }
 
 static struct platform_driver hailo15_gp_vdma_driver = {

@@ -889,14 +889,13 @@ err_free_hailo_soc:
 	return ret;
 }
 
-static int hailo_soc_remove(struct platform_device *pdev)
+/* 6.18: platform_driver.remove is void */
+static void hailo_soc_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
 
 	soc_device_unregister(hailo_soc->soc_dev);
-
-	return 0;
 }
 
 static struct platform_driver hailo_soc_driver = {

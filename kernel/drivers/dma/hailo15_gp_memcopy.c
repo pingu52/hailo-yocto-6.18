@@ -49,28 +49,41 @@ static long dma_memcpy_pfn_virt_to_phys(struct vm_area_struct *vma,
 					unsigned long vaddr, unsigned long size,
 					phys_addr_t *paddr)
 {
-	int ret;
+	/*
+	 * 6.18: follow_pfn() was removed; use follow_pfnmap_start()/end()
+	 * (struct follow_pfnmap_args) instead. The caller holds the mmap
+	 * lock read (see dma_memcpy_virt_to_phys()), as required.
+	 */
+	struct follow_pfnmap_args args = {
+		.vma = vma,
+		.address = vaddr,
+	};
 	unsigned long i;
-	unsigned long nr_pages = PFN_UP(vaddr + size) - PFN_DOWN(vaddr);
+	int ret;
 	unsigned long pfn;
-	ret = follow_pfn(vma, vaddr, &pfn);
+	unsigned long nr_pages = PFN_UP(vaddr + size) - PFN_DOWN(vaddr);
+
+	ret = follow_pfnmap_start(&args);
 	if (ret)
 		return ret;
+	pfn = args.pfn;
+	follow_pfnmap_end(&args);
 	*paddr = __pfn_to_phys(pfn) + (vaddr & ~PAGE_MASK);
 
 	for (i = 1; i < nr_pages; ++i) {
-		unsigned long next_pfn;
-		phys_addr_t next_phys;
-		ret = follow_pfn(vma, vaddr + (i << PAGE_SHIFT), &next_pfn);
+		args.vma = vma;
+		args.address = vaddr + (i << PAGE_SHIFT);
+		ret = follow_pfnmap_start(&args);
 		if (ret)
 			return ret;
-		if (next_pfn != pfn + 1) {
+		if (args.pfn != pfn + 1) {
+			follow_pfnmap_end(&args);
 			pr_debug("%s: non-contiguous physical memory\n",
 				 __func__);
 			return -EINVAL;
 		}
-		next_phys = __pfn_to_phys(next_pfn);
-		pfn = next_pfn;
+		pfn = args.pfn;
+		follow_pfnmap_end(&args);
 	}
 	pr_debug("%s: success, paddr: %pap\n", __func__, paddr);
 	return 0;
