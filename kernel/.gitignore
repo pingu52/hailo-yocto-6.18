@@ -89,3 +89,16 @@ modules.builtin.mod
 .tmp_*
 .tmp_*
 .tmp_*
+# final link artifacts
+.version
+.vmlinux.export.c
+System.map
+*.dtb.S
+config_data.gz
+vmlinux.symvers
+vmlinux.unstripped
+arch/x86/include/generated/
+arch/arm64/kvm/hyp-constants.s
+certs/signing_key.x509
+crypto/*asn1*.c
+crypto/*asn1*.h
