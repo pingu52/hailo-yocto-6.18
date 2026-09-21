@@ -74,7 +74,9 @@ static int scmi_hailo_unregister_notifier(u8 evt_id, struct notifier_block *nb)
 	if (!hailo_notify_ops || !hailo_notify_ops->devm_event_notifier_unregister)
 		return -EOPNOTSUPP;
 
-	return hailo_notify_ops->devm_event_notifier_unregister(hailo_sdev, SCMI_PROTOCOL_HAILO, evt_id, NULL, nb);
+	/* 6.18: devm_event_notifier_unregister() no longer takes
+	 * proto_id/evt_id/src_id (only sdev + nb). */
+	return hailo_notify_ops->devm_event_notifier_unregister(hailo_sdev, nb);
 }
 
 const struct scmi_hailo_ops *scmi_hailo_get_ops(void)

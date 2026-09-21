@@ -551,14 +551,13 @@ free_edac_mc:
  *
  * Return: Unconditionally 0
  */
-static int mc_remove(struct platform_device *pdev)
+/* 6.18: platform_driver.remove is void */
+static void mc_remove(struct platform_device *pdev)
 {
 	struct mem_ctl_info *mci = platform_get_drvdata(pdev);
 
 	edac_mc_del_mc(&pdev->dev);
 	edac_mc_free(mci);
-
-	return 0;
 }
 
 static struct platform_driver cdns_edac_mc_driver = {
