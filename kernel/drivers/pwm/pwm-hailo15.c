@@ -20,8 +20,8 @@
 
 /*
  * period = div * (RESOLUTION / CLK_RATE) = div * (4096 / (200 * 10^6)) = div * (20480 * 10^-9)
- * The minimum value for div is 0. in This case period = (20480 * 10^-9) s = 20480 ns
- * The maximum value for div is 0xFFFFF (1048575). in This case period = (20480 * 10^-9) * 1048575 = 21.475 s = 21474816000 ns
+ * The minimum value of div is 0. in This case period = (20480 * 10^-9) s = 20480 ns
+ * The maximum value of div is 0xFFFFF (1048575). in This case period = (20480 * 10^-9) * 1048575 = 21.475 s = 21474816000 ns
 */
 
 #define PWM_HAIL015__PERIOD_NS__MIN_VALUE (20480)
@@ -43,8 +43,7 @@
 	 (pwm_channel * PWM_CONFIG__PWMX_COUNTER__SHIFT))
 
 /**
- * struct hailo15_pwm_chip - Hailo15 PWM chip structure
- * @chip: The PWM chip structure
+ * struct hailo15_pwm_chip - Hailo15 PWM chip private data
  * @clk: Pointer to the clock structure
  * @base: Pointer to the base address of the PWM registers
  * @lock: Spinlock for protecting concurrent access to the PWM registers
@@ -52,15 +51,12 @@
  * @mask_enable_channels: Bitmask indicating which channels are enabled
  * @pwm_module_period_ns: Period of the PWM module in nanoseconds
  *
- * This structure represents the Hailo15 PWM chip. It contains various members
- * that store information related to the PWM chip, such as the chip structure,
- * clock structure, base address of the PWM registers, spinlock for protecting
- * concurrent access to the PWM registers, array of channel values for each PWM
- * channel, bitmask indicating which channels are enabled, and the period of the
- * PWM module in nanoseconds.
+ * 6.18 note: the pwm_chip structure itself is no longer embedded here. The
+ * framework allocates it together with this private-data block via
+ * devm_pwmchip_alloc(), and the private data is reached through
+ * pwmchip_get_drvdata() (see to_hailo15_pwm_chip()).
  */
 struct hailo15_pwm_chip {
-	struct pwm_chip chip;
 	struct clk *clk;
 	void __iomem *base;
 	spinlock_t lock;
@@ -72,7 +68,7 @@ struct hailo15_pwm_chip {
 static inline struct hailo15_pwm_chip *
 to_hailo15_pwm_chip(struct pwm_chip *chip)
 {
-	return container_of(chip, struct hailo15_pwm_chip, chip);
+	return pwmchip_get_drvdata(chip);
 }
 
 /**
@@ -183,9 +179,9 @@ static void hailo15_channel_pwm_disable(struct pwm_chip *chip,
 	 * It performs the following steps:
 	 * 1. Calls hailo15_pwm_config() to set the duty cycle to 0, without change the period.
 	 * 2. Delays for PWM_HAIL015__SLEEP_BEFORE_DISABLE__MICRO_SEC milliseconds using udelay().
-	 * 3. Reads the current value of the data register for the PWM channel.
+	 * 3. Reads the current value of the data register for the specified PWM channel.
 	 * 4. Clears the enable bit and the start value bits in the data register.
-	 * 5. Writes the updated data register value back to the PWM channel address.
+	 * 5. Writes the updated value of the data register back to the PWM channel address.
 	 * 
 	 */
 	hailo15_pwm_config(chip, pwm_channel, 0, hpc->pwm_module_period_ns);
@@ -209,14 +205,14 @@ static int hailo15_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	int err;
 
 	if (channel_new_state->polarity != PWM_POLARITY_NORMAL) {
-		dev_err(chip->dev,
+		dev_err(&chip->dev,
 			"Error: Polarity inversion is not supported\n");
 		return -EINVAL;
 	}
 
 	if ((channel_new_state->period < PWM_HAIL015__PERIOD_NS__MIN_VALUE) ||
 	    (channel_new_state->period > PWM_HAIL015__PERIOD_NS__MAX_VALUE)) {
-		dev_err(chip->dev,
+		dev_err(&chip->dev,
 			"Error: The period is not in the right range: [%d - %ld]\n",
 			PWM_HAIL015__PERIOD_NS__MIN_VALUE,
 			PWM_HAIL015__PERIOD_NS__MAX_VALUE);
@@ -256,7 +252,7 @@ static int hailo15_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 		if (((1 == num_pwm_channels_enabled) &&
 		     (pwm_channels_enable != pwm_channel)) ||
 		    (num_pwm_channels_enabled > 1)) {
-			dev_err(chip->dev,
+			dev_err(&chip->dev,
 				"Error: Failed to set period for the PWM channels since more then one channel is enabled\n");
 			return -EINVAL;
 		}
@@ -289,9 +285,13 @@ static int hailo15_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	return 0;
 }
 
+/*
+ * 6.18: pwm_chip no longer carries an .owner field; the chip owner is passed
+ * to the registration routine (pwmchip_add() expands to
+ * __pwmchip_add(chip, THIS_MODULE)).
+ */
 static const struct pwm_ops hailo15_pwm_ops = {
 	.apply = hailo15_pwm_apply,
-	.owner = THIS_MODULE,
 };
 
 static const struct of_device_id hailo15_pwm_match[] = {
@@ -302,34 +302,12 @@ MODULE_DEVICE_TABLE(of, hailo15_pwm_match);
 
 static int hailo15_pwm_probe(struct platform_device *pdev)
 {
+	struct pwm_chip *chip;
 	struct hailo15_pwm_chip *hpc;
+	struct device *dev = &pdev->dev;
 	int ret, index;
 	int npwm_channels;
-
-	hpc = devm_kzalloc(&pdev->dev, sizeof(*hpc), GFP_KERNEL);
-	if (!hpc) {
-		return -ENOMEM;
-	}
-
-	hpc->base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(hpc->base)) {
-		dev_err(&pdev->dev, "failed get pwm base addrerss\n");
-		ret = PTR_ERR(hpc->base);
-		goto free_pltfm;
-	}
-
-	hpc->clk = devm_clk_get(&pdev->dev, NULL);
-	if (IS_ERR(hpc->clk)) {
-		dev_err_probe(&pdev->dev, PTR_ERR(hpc->clk), "Cannot claim pwm clock\n");
-		ret = PTR_ERR(hpc->clk);
-		goto free_pltfm;
-	}
-
-	ret = clk_prepare_enable(hpc->clk);
-	if (ret) {
-		dev_err(&pdev->dev, "couldn't prepare-enable pwm clock\n");
-		goto free_pltfm;
-	}
+	uint32_t ch_map[PWM_HAILO15__MAX_NPWM_CHANNELS];
 
 	/*
 	 * Parse the supported PWM channels.
@@ -337,79 +315,100 @@ static int hailo15_pwm_probe(struct platform_device *pdev)
 	 * This is a example (in this board the PWM channels 2 and 3 are used).
 	 * In every board the user can choose which PWM channels he want to use.
 	 * If this property didn't exist, the driver set all the PWM_HAILO15__MAX_NPWM_CHANNELS channels.
-	 * hpc->channels is a map between the driver channel index to the PWM IP channel index.
-	*/
+	 * The map is a mapping between the driver channel index to the PWM IP channel index.
+	 * It is parsed into a stack buffer first because the chip (and its
+	 * private data block) is only allocated once the channel count is known.
+	 */
 	npwm_channels = of_property_read_variable_u32_array(
 		pdev->dev.of_node, "hailo15_pwm,supported-channels",
-		hpc->channels, 1, ARRAY_SIZE(hpc->channels));
+		ch_map, 1, ARRAY_SIZE(ch_map));
 
 	if (npwm_channels == -EINVAL) {
-		dev_dbg(&pdev->dev,
+		dev_dbg(dev,
 			"%s: No \"hailo15_pwm,supported-channels\", use all the channels\n",
 			__func__);
-		hpc->chip.npwm = PWM_HAILO15__MAX_NPWM_CHANNELS;
+		npwm_channels = PWM_HAILO15__MAX_NPWM_CHANNELS;
 
 		for (index = 0; index < PWM_HAILO15__MAX_NPWM_CHANNELS;
 		     index++) {
-			hpc->channels[index] = index;
+			ch_map[index] = index;
 		}
 	} else if (npwm_channels < 0) {
-		dev_err(&pdev->dev,
+		dev_err(dev,
 			"%s: Error getting \"hailo15_pwm,supported-channels\": %d\n",
 			__func__, npwm_channels);
-		ret = npwm_channels;
-		goto err_clk;
+		return npwm_channels;
 	} else {
-		hpc->chip.npwm = npwm_channels;
 		for (index = 0; index < npwm_channels; index++) {
-			if (hpc->channels[index] >=
+			if (ch_map[index] >=
 			    PWM_HAILO15__MAX_NPWM_CHANNELS) {
-				dev_err(&pdev->dev,
+				dev_err(dev,
 					"%s: Error getting \"hailo15_pwm,supported-channels\": %d\n",
-					__func__, hpc->channels[index]);
-				ret = -EIO;
-				goto err_clk;
+					__func__, ch_map[index]);
+				return -EIO;
 			}
 		}
 	}
 
-	hpc->chip.dev = &pdev->dev;
-	hpc->chip.ops = &hailo15_pwm_ops;
+	/*
+	 * 6.18: the pwm_chip must be allocated by the framework
+	 * (devm_pwmchip_alloc) together with the driver private-data block.
+	 * pwmchip_get_drvdata() (to_hailo15_pwm_chip) reaches that block.
+	 */
+	chip = devm_pwmchip_alloc(dev, npwm_channels, sizeof(*hpc));
+	if (IS_ERR(chip))
+		return dev_err_probe(dev, PTR_ERR(chip),
+				     "failed to allocate PWM chip\n");
+
+	hpc = to_hailo15_pwm_chip(chip);
+
+	hpc->base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(hpc->base))
+		return dev_err_probe(dev, PTR_ERR(hpc->base),
+				     "failed get pwm base addrerss\n");
+
+	hpc->clk = devm_clk_get(dev, NULL);
+	if (IS_ERR(hpc->clk))
+		return dev_err_probe(dev, PTR_ERR(hpc->clk),
+				     "Cannot claim pwm clock\n");
+
+	ret = clk_prepare_enable(hpc->clk);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "couldn't prepare-enable pwm clock\n");
+
+	for (index = 0; index < npwm_channels; index++)
+		hpc->channels[index] = ch_map[index];
+
+	chip->ops = &hailo15_pwm_ops;
 	hpc->mask_enable_channels = 0;
 
 	spin_lock_init(&hpc->lock);
 
-	ret = pwmchip_add(&hpc->chip);
-
-	if (ret < 0) {
-		dev_err(&pdev->dev, "failed to add PWM chip: %d\n", ret);
-		goto err_clk;
+	ret = pwmchip_add(chip);
+	if (ret) {
+		dev_err(dev, "failed to add PWM chip: %d\n", ret);
+		return ret;
 	}
 
-	platform_set_drvdata(pdev, hpc);
+	platform_set_drvdata(pdev, chip);
 
 	/* This register is responsible for activating the PWM IP registers changes */
 	writel(1, hpc->base + PWM_CONFIG__SETTINGS__UPDATE);
 
-	dev_info(&pdev->dev, "PWM chip registered\n");
+	dev_info(dev, "PWM chip registered\n");
 
 	return 0;
-
-err_clk:
-	clk_disable_unprepare(hpc->clk);
-free_pltfm:
-	return ret;
 }
 
-static int hailo15_pwm_remove(struct platform_device *pdev)
+static void hailo15_pwm_remove(struct platform_device *pdev)
 {
-	struct hailo15_pwm_chip *hpc = platform_get_drvdata(pdev);
+	struct pwm_chip *chip = platform_get_drvdata(pdev);
+	struct hailo15_pwm_chip *hpc = to_hailo15_pwm_chip(chip);
 
-	pwmchip_remove(&hpc->chip);
+	pwmchip_remove(chip);
 
 	clk_disable_unprepare(hpc->clk);
-
-	return 0;
 }
 static struct platform_driver hailo15_pwm_driver = {
 	.probe = hailo15_pwm_probe,

@@ -4,6 +4,12 @@
 #include "../core.h"
 #include "../pinctrl-utils.h"
 
+#include <linux/device.h>
+#include <linux/device/devres.h>
+#include <linux/platform_device.h>
+#include <linux/pinctrl/pinconf.h>
+#include <linux/seq_file.h>
+
 #include <linux/errno.h>
 #include <linux/of_platform.h>
 #include <linux/pinctrl/pinctrl.h>

@@ -12,6 +12,14 @@
 #include <linux/printk.h>
 #include <linux/gpio/driver.h>
 
+/* 6.18: no longer provided transitively by drivers/pinctrl/core.h */
+#include <linux/device.h>
+#include <linux/device/devres.h>
+#include <linux/pinctrl/pinconf.h>
+#include <linux/seq_file.h>
+#include <linux/platform_device.h>
+#include <linux/slab.h>
+
 #define GENERAL_PADS_CONFIG__PADS_PINMUX_BASE (0xA4)
 #define GPIO_PADS_CONFIG__DS__SIZE (0x4)
 #define GPIO_PADS_CONFIG__PADS_GPIO_DS_0 (0xC)
