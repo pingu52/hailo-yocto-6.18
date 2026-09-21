@@ -1,0 +1,25 @@
+# meta-hailo-6.18 빌드 디렉터리 local.conf
+#
+# 생성: ~/work/yocto-build-6.18/build/conf/local.conf
+# (oe-init-build-env가 템플릿으로 생성한 파일에 이 내용을 병합)
+
+# Hailo EVB 머신 + 이 레이어의 minimal distro
+MACHINE = "hailo15-evb-2-camera-vpu"
+DISTRO = "hailo"
+
+# wrynose 트리에는 nodistro.conf가 없어 distro conf는 이 레이어가 공급
+# (BBLAYERS에 meta + meta-hailo-6.18 모두 필요)
+
+# 빌드 병렬도 (nproc=24): -j $(nproc)
+BB_NUMBER_THREADS ?= "24"
+PARALLEL_MAKE ?= "-j 24"
+
+# virtual/kernel 제공자 (레시피 PREFERRED_PROVIDER가 설정, 여기선 명시)
+PREFERRED_PROVIDER_virtual/kernel = "linux-yocto-hailo"
+
+# sstate 생성 비활성 (외부 트리 빌드는 sstate와 비호환 - externalsrc가 SSTATE_SKIP_CREATION=1)
+# INHERIT에서 sstate 제외
+INHERIT:remove = " sstate "
+
+# 빌드 산출물 로그 (BUILD_EXIT 실측용)
+EXTRA_IMAGEDEPENDS = ""

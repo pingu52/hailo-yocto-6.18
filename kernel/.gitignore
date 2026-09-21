@@ -102,3 +102,8 @@ arch/arm64/kvm/hyp-constants.s
 certs/signing_key.x509
 crypto/*asn1*.c
 crypto/*asn1*.h
+# Yocto (externalsrc) 빌드 부산물
+.scmversion
+oe-logs
+oe-workdir
+*.dtbo.S
