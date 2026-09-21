@@ -1,0 +1,297 @@
+#ifndef __HAILO15_ISP_HW_DEFS_H
+#define __HAILO15_ISP_HW_DEFS_H
+
+#define INPUT_WIDTH 3840
+#define INPUT_HEIGHT 2160
+#define ISP_MP_Y_RING_FRAMES 2
+
+/* ISP specific registers */
+#define VI_IRCL 0x14
+#define VI_DPCL 0x18
+#define VI_IRCL_RESET_ISP 0xffffffff
+#define VI_IRCL_RESET_ISP_CLEAR 0
+#define ISP_ACQ_PROP 0x00000404
+#define ISP_ACQ_PROP_HDR_EN_MASK BIT(31)
+#define ISP_ACQ_PROP_PINMAP_MASK (BIT(17) | BIT(18) | BIT(19))
+#define ISP_ACQ_PROP_SDR_PINMAP_MASK BIT(18)                          /* mode 2 */
+#define ISP_IMSC 0x000005bc
+#define ISP_MCM_CTRL 0x00001200
+#define MIV2_MP_YCBCR_FRAME_END_MASK BIT(0)
+#define MIV2_SP2_YCBCR_FRAME_END_MASK BIT(4)
+#define MIV2_MCM_DMA_RAW_READY_MASK BIT(24)
+#define MIV2_MCM_RAW0_FRAME_END BIT(6)
+#define MIV2_MCM_RAW1_FRAME_END BIT(7)
+#define ISP_MIS 0x000005c4
+#define ISP_MIS_DATA_LOSS BIT(2)
+#define ISP_MIS_SENSORS_COUNT 4
+#define ISP_MIS_SENSOR_DATALOSS_LAST_BIT BIT(26)
+#define ISP_ICR 0x000005c8
+#define MIV2_ICR 0x000016d8
+#define MIV2_ICR1 0x000016dc
+#define MIV2_ICR2 0x000016f4
+#define MIV2_ICR3 0x000056dc
+#define MIV2_IMSC 0x000016c0
+#define MIV2_RIS 0x000016c8
+#define MIV2_MIS 0x000016d0
+#define MIV2_MIS1 0x000016d4
+#define MIV2_MIS2 0x000016f0
+#define MIV2_MIS3 0x000056d8
+#define ISP_STITCHING_IMSC 0x000033e4
+#define ISP_STITCHING_MIS 0x000033ec
+#define ISP_STITCHING_ICR 0x000033f0
+/* Error bits in stitching MIS (bits 0-2):
+ *   bit 0: stitching_imsc_exp_err1   - HDR short exp time error L
+ *   bit 1: stitching_imsc_exp_err2   - HDR very short exp time error L
+ *   bit 2: stitching_imsc_fifo_empty - HDR FIFO empty L
+ * Bits 3-5: exp-stat L/S/VS; bits 6-8: hist L/S/VS. */
+#define ISP_STITCHING_MIS_ERR_MASK 0x07
+#define ISP_STITCHING_MIS_EXP_STAT_S_RDY  BIT(4)
+#define ISP_STITCHING_MIS_EXP_STAT_VS_RDY BIT(5)
+
+#define ISP_HDR_EXP_STATISTICS_BASE 0x00003C14
+#define ISP_HDR_EXP_STATISTICS_MAX  75
+#define ISP_HDR_EXP_STATISTICS_2DOL 50
+#define ISP_HDR_EXP_STATISTICS_3DOL 75
+
+/* HDR exposure measurement: 5x5 per-exposure luma means over a configurable
+ * window. */
+#define ISP_HDR_EXP_CONF     0x00003C00
+#define ISP_HDR_EXP_H_OFFSET 0x00003C04
+#define ISP_HDR_EXP_V_OFFSET 0x00003C08
+#define ISP_HDR_EXP_H_SIZE   0x00003C0C
+#define ISP_HDR_EXP_V_SIZE   0x00003C10
+#define ISP_HDR_EXP_CONF_START      BIT(0)
+#define ISP_HDR_EXP_CONF_SRC_SEL    BIT(2)
+#define ISP_HDR_EXP_CONF_MEAS_MODE  BIT(31)
+/* isp_stitching_imsc bits 3,4,5: per-exposure stat ready (L/S/VS). */
+#define ISP_STITCHING_IMSC_EXP_STAT_MASK 0x38
+/* Register field masks */
+#define ISP_HDR_EXP_H_OFFSET_MASK 0x00001FFFU
+#define ISP_HDR_EXP_V_OFFSET_MASK 0x00001FFFU
+#define ISP_HDR_EXP_H_SIZE_MASK   0x000007FFU
+#define ISP_HDR_EXP_V_SIZE_MASK   0x000007FEU
+#define MIV2_MP_Y_BASE_AD_INIT 0x00001324
+#define MIV2_SP2_Y_BASE_AD_INIT 0x000014f8
+#define MIV2_MP_CB_BASE_AD_INIT 0x1340
+#define MIV2_SP2_CB_BASE_AD_INIT 0x1514
+#define MIV2_MP_CR_BASE_AD_INIT 0x134c
+#define MIV2_SP2_CR_BASE_AD_INIT 0x1520
+#define MIV2_SP2_RAW_FRAME_END BIT(5)
+
+#define FE_CTRL 0x3D60
+#define FE_IMSC 0x3D6C
+#define FE_RIS 0x3D7C
+#define FE_ICR 0x3D78
+#define FE_ADDR_INTERVENE 0x3D80
+#define FE_DMA_START_BIT BIT(16)
+
+/* FE MIS/IMSC/ICR bit definitions */
+#define FE_INT_CFG_END BIT(0)
+#define FE_INT_ISP_VAL_INTERVENE BIT(1)
+#define FE_INT_ADDR_INTERVENE BIT(2)
+#define FE_INT_ALL (FE_INT_CFG_END | FE_INT_ISP_VAL_INTERVENE | FE_INT_ADDR_INTERVENE)
+
+#define MCM_RETIMING0 0x1284
+#define MCM_RETIMING1 0x1288
+
+/* retiming values are calculated based on 33 FPS in 4k */
+#define MCM_RETIMING_VSYNC 0x0A /* vblank = 0 */
+#define MCM_RETIMING_HSYNC 0x11E201 /* hblank = 4578 cycles */
+
+/* MCM_RETIMING register field decoders. Per ISP8000L V5.0.0 register map:
+ *   MCM_RETIMING0 [31:8] mcm_vsync_blank     (clocks: prev frame end -> next VSYNC)
+ *   MCM_RETIMING0 [7:0]  mcm_vsync_duration  (clocks of active VSYNC)
+ *   MCM_RETIMING1 [31:8] mcm_hsync_blank     (clocks: prev line end -> next HSYNC)
+ *   MCM_RETIMING1 [7:0]  mcm_hsync_preample  (clocks: VSYNC -> first HSYNC) */
+#define MCM_RETIMING_HBLANK_CYCLES(r1)     ((r1) >> 8)
+#define MCM_RETIMING_HPREAMP_CYCLES(r1)    ((r1) & 0xFF)
+#define MCM_RETIMING_VBLANK_CYCLES(r0)     ((r0) >> 8)
+#define MCM_RETIMING_VDURATION_CYCLES(r0)  ((r0) & 0xFF)
+
+/* ISP wrapper clock — see /sys/kernel/debug/clk/isp_wrapper_clk/clk_rate.
+ * Update if the SoC clock-controller default ever changes. */
+#define ISP_WRAPPER_CLK_HZ                 600000000U
+
+/* Slack added on top of the computed MCM RDMA duration to absorb IRQ
+ * dispatch / scheduling jitter. */
+#define MCM_RDMA_TIMEOUT_SLACK_US          5000U
+
+/* Defensive clamp bounds on the dynamic MCM RDMA timeout, in milliseconds. */
+#define MCM_RDMA_TIMEOUT_MIN_MS            20U
+#define MCM_RDMA_TIMEOUT_MAX_MS            200U
+#define MCM_RDMA_TIMEOUT_DEFAULT_MS        35U
+
+/* isp ae mis and int mask */
+#define ISP_MIS_EXP_END_MASK 0x00040000
+#define ISP_MIS_HIST_MEASURE_RDY_MASK 0x00008000
+#define ISP_MP_JDP_FRAME_END_MASK 0x00000004
+/* isp awb mis and int mask */
+#define ISP_MIS_AWB_DONE_MASK 0x00000010
+/* isp cdaf mis and int mask */
+#define ISP_MIS_AFM_FIN_MASK 0x00004000
+
+/* MRSZ */
+#define MRSZ_CTRL 0x00000c00
+#define MRSZ_CTRL_AUTO_UPD BIT(10)
+#define MRSZ_CTRL_CFG_UPD BIT(9)
+#define MRSZ_CTRL_SCALE_VC_UP BIT(7)
+#define MRSZ_CTRL_SCALE_VY_UP BIT(6)
+#define MRSZ_CTRL_SCALE_HC_UP BIT(5)
+#define MRSZ_CTRL_SCALE_HY_UP BIT(4)
+#define MRSZ_CTRL_SCALE_VC_ENABLE BIT(3)
+#define MRSZ_CTRL_SCALE_VY_ENABLE BIT(2)
+#define MRSZ_CTRL_SCALE_HC_ENABLE BIT(1)
+#define MRSZ_CTRL_SCALE_HY_ENABLE BIT(0)
+#define MRSZ_SCALE_HY 0x00000c04
+#define MRSZ_SCALE_HCB 0x00000c08
+#define MRSZ_SCALE_HCR 0x00000c0c
+#define MRSZ_SCALE_VY 0x00000c10
+#define MRSZ_SCALE_VC 0x00000c14
+#define MRSZ_FORMAT_CONV_CTRL 0xc6c
+#define RSZ_FORMAT_MASK (BIT(0) | BIT(1) | BIT(2) | BIT(3) | BIT(4))
+#define RSZ_FORMAT_YUV422 (BIT(3) | BIT(1))
+#define RSZ_FORMAT_RGB888 (BIT(1) | BIT(3) | BIT(4))
+#define RSZ_FORMAT_YUV420 (BIT(2) | BIT(0))
+
+/*MI*/
+#define MI_CTRL 0x1300
+#define MI_CTRL_MCM_RAW_RDMA_PATH_ENABLE BIT(14)
+#define MI_CTRL_MCM_RAW_RDMA_START_CON BIT(16)
+#define MI_CTRL_MCM_RAW_RDMA_START BIT(15)
+#define SP2_RAW_RDMA_START BIT(12)
+#define SP2_RAW_RDMA_START_CON BIT(13)
+#define MP_YCBCR_PATH_ENABLE_MASK BIT(0)
+#define SP2_YCBCR_PATH_ENABLE_MASK BIT(4)
+#define MI_MP_Y_SIZE_INIT 0x1328
+#define MI_SP2_Y_SIZE_INIT 0x14fc
+#define MI_MP_Y_LLENGTH 0x1330
+#define MI_MP_Y_PIC_WIDTH 0x1334
+#define MI_MP_Y_PIC_HEIGHT 0x1338
+#define MI_MP_Y_PIC_SIZE 0x133c
+#define MI_MP_FMT 0x1314
+#define MP_WR_YUV_FMT_MASK (BIT(2) | BIT(3))
+#define MP_WR_YUV_FMT_YUV422 (BIT(2))
+#define MP_WR_YUV_FMT_RGB888 (BIT(3))
+#define MP_WR_YUV_FMT_YUV420 0x0
+#define MI_MP_CTRL 0x1310
+#define MI_MP_CFG_UPD BIT(3)
+#define MI_MP_CB_SIZE_INIT 0x1344
+#define MI_SP2_CB_SIZE_INIT 0x1518
+#define MI_MP_CR_SIZE_INIT 0x134c
+#define MI_SP2_CR_SIZE_INIT 0x1524
+#define MP_WR_YUV_STR_MASK (BIT(4) | BIT(5))
+#define MP_WR_YUV_STR_INTERLEAVED_MASK (BIT(4))
+#define MP_WR_YUV_STR_SP_MASK 0x0
+#define MP_WR_YUV_STR_P_MASK (BIT(4) | BIT(5))
+#define MIV2_MCM_DMA_RAW_PIC_START_AD 0x166c
+#define MI_MCM_CTRL 0x1600
+#define MCM_RD_CFG_UPD BIT(6)
+#define MCM_WR_AUTO_UPDATE BIT(0)
+#define MI_MCM_RAW0_BASE_AD_INIT 0x1614
+#define MI_MCM_RAW0_SIZE_INIT 0x1618
+#define MI_MCM_RAW0_OFFS_CNT_INIT 0x161c
+#define MI_MCM_RAW0_LLENGTH 0x1620
+#define MI_MCM_RAW0_PIC_WIDTH 0x1624
+#define MI_MCM_RAW0_PIC_HEIGHT 0x1628
+#define MI_MCM_RAW0_PIC_SIZE 0x162c
+#define MI_MCM_RAW0_OFFS_CNT_START 0x1630
+#define MI_MCM_RAW1_BASE_AD_INIT 0x1640
+#define MI_MCM_RAW1_SIZE_INIT 0x1644
+#define MI_MCM_RAW1_OFFS_CNT_INIT 0x1648
+#define MI_MCM_RAW1_LLENGTH 0x164c
+#define MI_MCM_RAW1_PIC_WIDTH 0x1650
+#define MI_MCM_RAW1_PIC_HEIGHT 0x1654
+#define MI_MCM_RAW1_PIC_SIZE 0x1658
+#define MI_MCM_RAW1_OFFS_CNT_START 0x165c
+#define MI_MCM_DMA_RAW_PIC_WIDTH 0x1670
+#define MI_MCM_DMA_RAW_PIC_LLENGTH 0x1674
+#define MI_MCM_DMA_RAW_PIC_LVAL 0x1690
+#define MI_MCM_DMA_RAW_PIC_SIZE 0x1678
+#define MCM_RD_CFG 0x1280
+#define MI_MCM_FMT 0X1604
+#define MCM_WR0_RAW_BIT BIT(5) /* raw12 */
+#define MCM_WR1_RAW_BIT BIT(9) /* raw12 */
+#define MCM_RD_RAW12_BIT 2
+#define MCM_RD_RAW16_BIT 4
+#define MI_IMSC 0x16C0
+#define MCM_DMA_RAW_READY BIT(24)
+
+/* MCM write format fields in ISP_MCM_CTRL register */
+/* mcm_wr0_fmt: bits[7:5] - MCM channel 0 (sensor0) */
+#define MCM_WR0_FMT_MASK    (BIT(5) | BIT(6) | BIT(7))
+#define MCM_WR0_FMT_16BIT   BIT(7)              /* b100 = 4 */
+#define MCM_WR0_FMT_20BIT   (BIT(7) | BIT(5))   /* b101 = 5 */
+
+/* mcm_wr1_fmt: bits[10:8] - MCM channel 1 (sensor1) */
+#define MCM_WR1_FMT_MASK    (BIT(8) | BIT(9) | BIT(10))
+#define MCM_WR1_FMT_16BIT   BIT(10)             /* b100 = 4 */
+#define MCM_WR1_FMT_20BIT   (BIT(10) | BIT(8))  /* b101 = 5 */
+
+#define ACQ_PROP_HDR_INPUT_BAYER_FORMAT_MASK (BIT(20) | BIT(21) | BIT(22))
+
+enum mcm_rd_fmt {
+    MCM_RD_FMT_8BIT = 0,
+    MCM_RD_FMT_10BIT = 1,
+    MCM_RD_FMT_12BIT = 2,
+    MCM_RD_FMT_14BIT = 3,
+    MCM_RD_FMT_16BIT = 4,
+    MCM_RD_FMT_20BIT = 5,
+    MCM_RD_FMT_INVALID
+};
+
+enum isp_mcm_mode {
+    ISP_MCM_MODE_OFF = 0,
+    ISP_MCM_MODE_STITCHING,
+    ISP_MCM_MODE_INJECTION,
+    ISP_MCM_MODE_RAW12_PACKED,
+    ISP_MCM_MODE_MULTI_SENSOR,
+    ISP_MCM_MODE_RAW_WRITE,
+    ISP_MCM_MODE_MAX
+};
+
+/* Optional bit on the ISPIOC_V4L2_MCM_MODE argument: stall MCM IN
+ * buffer_done while MP has no buffer queued. Default: drop to fakebuf. */
+#define MCM_MODE_MASK              0xFFFF
+#define MCM_FLAG_INJECT_STALL      (1u << 31)
+
+/*AF Measurments*/
+#define ISP_AFM_SUM_A 0x2024
+#define ISP_AFM_SUM_B 0x2028
+#define ISP_AFM_SUM_C 0x202c
+#define ISP_AFM_LUM_A 0x2030
+#define ISP_AFM_LUM_B 0x2034
+#define ISP_AFM_LUM_C 0x2038
+
+#define ISP_MIS_AFM_SUM_OF BIT(12)
+#define ISP_MIS_AFM_LUM_OF BIT(13)
+#define ISP_MIS_AFM_FIN BIT(14)
+#define ISP_MIS_VSM_DONE BIT(19)
+#define ISP_MIS_FRAME_OUT BIT(1)
+#define ISP_VSM_DELTA_H 0x2f1c
+#define ISP_VSM_DELTA_V 0x2f20
+
+#define ISP_VSM_DELTA_SIGN_MASK BIT(11)
+
+#define FE_MIS 0x3d74
+#define MIPI_MIS 0x1C10
+#define MIPI_ICR 0x1C14
+
+/*ISP*/
+#define ISP_CTRL 0x400
+#define ISP_ENABLE BIT(0)
+#define ISP_CFG_UPD BIT(9)
+
+#define HAILO15_ISP_EVENT_IRQ (V4L2_EVENT_PRIVATE_START + 3000)
+
+enum hailo15_isp_irq_event_id {
+	HAILO15_ISP_IRQ_EVENT_ISP_MIS,
+	HAILO15_ISP_IRQ_EVENT_MI_MIS,
+	HAILO15_ISP_IRQ_EVENT_MI_MIS1,
+	HAILO15_ISP_IRQ_EVENT_MI_MIS2,
+	HAILO15_ISP_IRQ_EVENT_MI_MIS3,
+	HAILO15_ISP_IRQ_EVENT_MI_MIS_HDR1,
+	HAILO15_ISP_IRQ_EVENT_FE,
+	HAILO15_ISP_IRQ_EVENT_MAX,
+};
+
+#endif /*__HAILO15_ISP_HW_DEFS_H*/

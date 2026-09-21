@@ -1,0 +1,2399 @@
+#include "hailo15-vid-cap.h"
+
+#include <linux/module.h>
+#include <linux/platform_device.h>
+#include <linux/of_reserved_mem.h>
+#include <linux/delay.h>
+#include <linux/version.h>
+#include <linux/kthread.h>
+#include <linux/pm_runtime.h>
+#include <linux/errno.h>
+#include <linux/slab.h>
+#include <linux/list.h>
+#include <linux/fs.h>
+#include <media/v4l2-device.h>
+#include <media/v4l2-event.h>
+#include <media/v4l2-fh.h>
+#include <media/v4l2-ioctl.h>
+#include <media/videobuf2-dma-contig.h>
+#include "hailo15-events.h"
+#include "hailo15-video-events.h"
+#include "hailo15-media.h"
+
+
+#define CREATE_TRACE_POINTS
+#undef TRACE_SYSTEM
+#define TRACE_SYSTEM hailo15_vid_cap
+#include <trace/events/hailo15_vid_cap.h>
+#include <trace/events/hailo15_vid_cap_fast_toggle.h>
+
+#define HAILO_VID_NAME "hailo_video"
+
+#define MIN_BUFFERS_NEEDED 2
+#define MAX_NUM_FRAMES HAILO15_MAX_BUFFERS
+#define NUM_PLANES                                                             \
+	1 /*working on packed mode, this should be determined from the format*/
+
+#define STREAM_OFF 0
+#define STREAM_ON 1
+
+#define VIDEO_INDEX_VALIDATE(index, do_fail)                                   \
+	do {                                                                   \
+		if ((index) >= MAX_VIDEO_NODE_NUM) {                           \
+			pr_err("%s: id %d is too large (id > %d) \n",          \
+				   __func__, index, MAX_VIDEO_NODE_NUM);           \
+			do_fail;                                               \
+		}                                                              \
+	} while (0);
+#define VALIDATE_STREAM_OFF(vid_node, do_fail)                                     \
+	do {                                                                       \
+		if ((vid_node)->streaming) {                                       \
+			pr_err("video_device: tried to call %s while streaming!\n", \
+				   __func__);                                          \
+			do_fail;                                                   \
+		}                                                                  \
+	} while (0);
+
+static struct mutex sd_mutex;
+
+#define hailo15_subdev_call(vid_node, ...)                                     \
+	({                                                                     \
+		int __ret;                                                     \
+		do {                                                           \
+			mutex_lock(&sd_mutex);                                 \
+			vid_node->direct_sd->grp_id = vid_node->path;          \
+			__ret = v4l2_subdev_call(vid_node->direct_sd,          \
+						 __VA_ARGS__);                 \
+			mutex_unlock(&sd_mutex);                               \
+		} while (0);                                                   \
+		__ret;                                                         \
+	})
+
+#define hailo15_subdev_call_fake_grp_id(vid_node, fake_grp_id, ...)               \
+	({                                                                     \
+		int __ret;                                                     \
+		do {                                                           \
+			mutex_lock(&sd_mutex);                                 \
+			vid_node->direct_sd->grp_id = (fake_grp_id);          \
+			__ret = v4l2_subdev_call(vid_node->direct_sd,          \
+						 __VA_ARGS__);                 \
+			mutex_unlock(&sd_mutex);                               \
+		} while (0);                                                   \
+		__ret;                                                         \
+	})
+
+static int hailo15_querycap(struct file *file, void *fh,
+				struct v4l2_capability *cap)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	if (WARN_ON(!vid_node))
+		return -EINVAL;
+
+	strcpy(cap->driver, HAILO_VID_NAME);
+	strcpy(cap->card, "HAILO");
+	cap->bus_info[0] = 0;
+	snprintf((char *)cap->bus_info, sizeof(cap->bus_info),
+		 "platform:hailo%d", vid_node->id);
+
+	return 0;
+}
+
+static struct v4l2_subdev *hailo15_video_remote_subdev(struct hailo15_video_node *hailo15_vdev)
+{
+	struct media_pad *pad;
+	struct v4l2_subdev *subdev;
+
+	pad = media_entity_remote_pad(&hailo15_vdev->pad);
+
+	if (!pad || !is_media_entity_v4l2_subdev(pad->entity))
+		return NULL;
+
+	subdev = media_entity_to_v4l2_subdev(pad->entity);
+
+	return subdev;
+}
+
+static int hailo15_video_create_pipeline(struct hailo15_video_node *vid_node, bool is_fast_toggle)
+{
+	int ret = 0;
+
+	if (vid_node->pipeline_init == 0 &&
+		!hailo15_is_p2a_grp_id(vid_node->path) &&
+		!hailo15_is_mcm_raw_wr_grp_id(vid_node->path)) {
+
+		// post event create pipeline
+		if (is_fast_toggle) {
+			ret = hailo15_video_post_event_create_pipeline_fast_toggle(vid_node);
+		} else {
+			ret = hailo15_video_post_event_create_pipeline(vid_node);
+		}
+
+		if (ret) {
+			pr_err("%s - post event failed and returned: %d\n",
+				   __func__, ret);
+			return ret;
+		}
+	}
+
+	return ret;
+}
+
+static int hailo15_enum_fmt_vid_cap(struct file *file, void *priv,
+					struct v4l2_fmtdesc *f)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+
+	if (WARN_ON(!vid_node))
+		return -EINVAL;
+
+	if (f->index < hailo15_get_formats_count()) {
+		f->pixelformat = hailo15_get_formats()[f->index].fourcc;
+		return 0;
+	}
+
+	return -EINVAL;
+}
+
+static int hailo15_g_fmt_vid_cap(struct file *file, void *priv,
+				 struct v4l2_format *f)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+
+	if (WARN_ON(!vid_node))
+		return -EINVAL;
+
+	if (f->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
+
+	if (!vid_node->pipeline_init) {
+		pr_err("%s - cannot get format before setting format\n", __func__);
+	}
+
+	/* is it really a user-space struct ?*/
+	memcpy(f, &vid_node->fmt, sizeof(struct v4l2_format));
+	return 0;
+}
+
+static inline void init_v4l2_subdev_fmt(struct v4l2_subdev_format *subdev_fmt,
+					struct v4l2_pix_format_mplane *fmt,
+					int code, int active)
+{
+	subdev_fmt->format.width = fmt->width;
+	subdev_fmt->format.height = fmt->height;
+	subdev_fmt->format.code = code;
+	subdev_fmt->which =
+		active ? V4L2_SUBDEV_FORMAT_ACTIVE : V4L2_SUBDEV_FORMAT_TRY;
+}
+
+static int _hailo15_try_fmt_vid_cap(struct file *file, void *priv,
+					struct v4l2_format *f, int active)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	struct v4l2_pix_format_mplane *pix_mp = &f->fmt.pix_mp;
+	const struct hailo15_video_fmt *format = NULL;
+	struct v4l2_subdev_format fmt;
+	struct v4l2_subdev_state try_fmt;
+	struct v4l2_subdev_pad_config pad_cfg;
+	int ret;
+
+	memset(&fmt, 0, sizeof(fmt));
+	memset(&try_fmt, 0, sizeof(try_fmt));
+	memset(&pad_cfg, 0, sizeof(pad_cfg));
+
+	if (WARN_ON(!vid_node)) {
+		pr_info("%s - failed to get vid_node from device video_drvdata\n",
+			   __func__);
+		return -EINVAL;
+	}
+
+	VALIDATE_STREAM_OFF(vid_node, return -EBUSY);
+
+	if (!V4L2_TYPE_IS_MULTIPLANAR(f->type)) {
+		pr_info("%s - only multiplanar formats are supported\n", __func__);
+		return -EINVAL;
+	}
+
+	format = hailo15_fourcc_get_format(pix_mp->pixelformat, pix_mp->num_planes);
+
+	if (format == NULL) {
+		pr_debug("%s - format not supported\n", __func__);
+		return -EINVAL;
+	}
+
+	if (pix_mp->width % format->width_modulus) {
+		pr_debug("%s - width not aligned\n", __func__);
+		return -EINVAL;
+	}
+
+	ret = hailo15_fill_planes_fmt(format, pix_mp);
+	if (ret) {
+		pr_err("%s - fill_planes_fmt failed\n", __func__);
+		return ret;
+	}
+
+	pix_mp->quantization = V4L2_QUANTIZATION_FULL_RANGE;
+	pix_mp->colorspace = V4L2_COLORSPACE_DEFAULT;
+	init_v4l2_subdev_fmt(&fmt, pix_mp, format->code, active);
+
+	if (!active) {
+		pad_cfg.try_fmt = fmt.format;
+		try_fmt.pads = &pad_cfg;
+		ret = hailo15_subdev_call(vid_node, pad, set_fmt, &try_fmt,
+					  &fmt);
+		if (ret){
+			pr_err("%s - set_fmt try %x failed on subdev %s, ret %d\n",
+				__func__, fmt.format.code, vid_node->direct_sd->name, ret);
+			return ret;
+		}
+	} else {
+		ret = hailo15_subdev_call(vid_node, pad, set_fmt, NULL, &fmt);
+		if (ret) {
+			pr_err("%s - set_fmt %x active failed on subdev %s, ret %d\n",
+				__func__, fmt.format.code, vid_node->direct_sd->name, ret);
+			return ret;
+		}
+	}
+
+	return ret;
+}
+
+static int hailo15_try_fmt_vid_cap(struct file *file, void *priv,
+				   struct v4l2_format *f)
+{
+	return _hailo15_try_fmt_vid_cap(file, priv, f, 0);
+}
+
+static int hailo15_s_fmt_vid_cap(struct file *file, void *priv,
+				 struct v4l2_format *f)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	int ret = 0;
+
+	if (WARN_ON(!vid_node))
+		return -EINVAL;
+
+	VALIDATE_STREAM_OFF(vid_node, return -EBUSY);
+
+	if (!vid_node->pipeline_init) {
+		ret = hailo15_video_create_pipeline(vid_node, false);
+		if (ret) {
+			return ret;
+		}
+		vid_node->pipeline_init = 1;
+	}
+	ret = _hailo15_try_fmt_vid_cap(file, priv, f, 1);
+	if (ret) {
+		pr_debug("%s - try set fmt failed with: %d\n", __func__, ret);
+		return ret;
+	}
+
+	memcpy(&vid_node->fmt, f, sizeof(struct v4l2_format));
+	return ret;
+}
+
+static void hailo15_video_node_queue_clean(struct hailo15_video_node *vid_node,
+					   enum vb2_buffer_state state)
+{
+	struct hailo15_buffer *buf, *nbuf, *tmp_buf;
+	struct hailo15_dma_ctx *ctx;
+
+	if (WARN_ON(!vid_node)) {
+		pr_err("%s - failed to get vid_node\n",__func__);
+		return;
+	}
+
+	/* On P2A flow - rxwrapper manages FIFO of buffers - so it should clean them */
+	if (hailo15_is_p2a_grp_id(vid_node->path)) {
+		ctx = v4l2_get_subdevdata(vid_node->direct_sd);
+		hailo15_video_node_queue_empty(ctx, vid_node->path);
+		return;
+	}
+
+	mutex_lock(&vid_node->qlock);
+	list_for_each_entry_safe (buf, nbuf, &vid_node->buf_queue, irqlist) {
+		hailo15_buf_list_del(buf);
+		trace_vid_cap_buffer_dequeue(vid_node->path, buf->vb.vb2_buf.index,
+					     buf->dma[0], ktime_get_ns());
+		vb2_buffer_done(&buf->vb.vb2_buf, state);
+	}
+	if (vid_node->prev_buf) {
+		tmp_buf = vid_node->prev_buf;
+		vid_node->prev_buf = NULL;
+		trace_vid_cap_buffer_dequeue(vid_node->path, tmp_buf->vb.vb2_buf.index,
+					     tmp_buf->dma[0], ktime_get_ns());
+		vb2_buffer_done(&tmp_buf->vb.vb2_buf, state);
+	}
+	if (vid_node->fast_toggle_priming_buf) {
+		tmp_buf = vid_node->fast_toggle_priming_buf;
+		vid_node->fast_toggle_priming_buf = NULL;
+		trace_vid_cap_fast_toggle_priming_buf_released(vid_node->path,
+							       tmp_buf->vb.vb2_buf.index,
+							       tmp_buf->dma[0]);
+		vb2_buffer_done(&tmp_buf->vb.vb2_buf, state);
+	}
+
+	vid_node->skip_first_list_entry = false;
+	mutex_unlock(&vid_node->qlock);
+}
+
+static int hailo15_pad_s_stream(struct hailo15_video_node *vid_node, int enable)
+{
+    struct v4l2_subdev *subdev;
+    struct media_pad *pad;
+    struct hailo15_pad_stream_status stream_status;
+    int ret;
+
+    if (WARN_ON(!vid_node))
+        return -EINVAL;
+
+    // Check if the subdevice is initialized and connected, and skip otherwise
+    subdev = hailo15_video_remote_subdev(vid_node);
+    if (!subdev || !subdev->ctrl_handler)
+        return 0;
+
+    pad = media_entity_remote_pad(&vid_node->pad);
+    stream_status.pad = pad->index;
+    stream_status.status = enable;
+
+    ret = v4l2_subdev_call(subdev, core, ioctl, HAILO15_PAD_S_STREAM, &stream_status);
+    if (ret) {
+        pr_err("%s - failure on subdev call, return code %d\n", __func__, ret);
+    }
+
+    return ret;
+}
+
+static int hailo15_video_node_subdev_set_stream(
+    struct hailo15_video_node *vid_node, int enable)
+{
+	int ret;
+
+	if (WARN_ON(!vid_node))
+		return -EINVAL;
+
+	// On stream stop, reset this boolean so that next stream will start with "false"
+	if (!enable) {
+		vid_node->is_first_buffer_processed = false;
+	}
+
+	dev_dbg(vid_node->dev, "before subdev call, stream %s\n", enable ? "on" : "off");
+	ret = hailo15_subdev_call(vid_node, video, s_stream, enable);
+	if (ret) {
+		pr_err("%s - failed to set stream on subdev, subdev call returned %d\n", __func__, ret);
+		return ret;
+	}
+
+	// Also mark the stream status on the pad
+	return hailo15_pad_s_stream(vid_node, enable);
+}
+
+static int hailo15_video_node_subdev_fast_toggle_set_status(struct hailo15_video_node *vid_node, enum fast_toggle_state state, enum fast_toggle_type toggle_type)
+{
+	int ret;
+	struct fast_toggle_data toggle_data = {
+		.state = state,
+		.type = toggle_type
+	};
+
+	if (WARN_ON(!vid_node))
+		return -EINVAL;
+
+	ret = hailo15_subdev_call(vid_node, core, ioctl, HAILO15_INTERNAL_ISP_FAST_TOGGLE_SET_STATUS, &toggle_data);
+	if (ret) {
+		pr_err("%s - failed to set stream on subdev, subdev call returned %d\n", __func__, ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int hailo15_streamon(struct file *file, void *priv, enum v4l2_buf_type i)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	int ret;
+
+	if (WARN_ON(!vid_node)) {
+		pr_err("%s - failed to get vid_node from device video_drvdata\n",
+			   __func__);
+		return -EINVAL;
+	}
+
+	mutex_lock(&vid_node->ioctl_mutex);
+	if (!vid_node->streaming) {
+		ret = vb2_ioctl_streamon(file, priv, i);
+		if (ret) {
+			mutex_unlock(&vid_node->ioctl_mutex);
+			pr_err("%s - ERROR from vb2_ioctl_streamon: %d\n",
+				   __func__, ret);
+			return ret;
+		}
+	}
+	mutex_unlock(&vid_node->ioctl_mutex);
+
+	return 0;
+}
+static int hailo15_streamoff(struct file *file, void *priv,
+				 enum v4l2_buf_type i)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	int ret = 0;
+
+	if (WARN_ON(!vid_node)) {
+		pr_err("%s - failed to get vid_node from device video_drvdata\n",
+			   __func__);
+		return -EINVAL;
+	}
+
+	mutex_lock(&vid_node->ioctl_mutex);
+	if (!vid_node->streaming) {
+		mutex_unlock(&vid_node->ioctl_mutex);
+		return 0;
+	}
+
+	ret = vb2_ioctl_streamoff(file, priv, i);
+	mutex_unlock(&vid_node->ioctl_mutex);
+	return ret;
+}
+
+static int hailo15_s_parm(struct file *file, void *fh,
+			  struct v4l2_streamparm *a)
+{
+	struct v4l2_subdev *remote_sd;
+	struct v4l2_subdev *sensor_sd;
+	struct v4l2_subdev_frame_interval fi;
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	int ret = 0;
+
+	fi.interval = a->parm.capture.timeperframe;
+	fi.pad = 0;
+
+	/* Forward to the adjacent subdev (the ISP for ISP-attached capture
+	 * nodes). Fall through to the direct-to-sensor path below if the
+	 * remote doesn't implement s_frame_interval (e.g. P2A via rxwrapper). */
+	remote_sd = hailo15_video_remote_subdev(vid_node);
+	if (remote_sd) {
+		ret = v4l2_subdev_call(remote_sd, video,
+				       s_frame_interval, &fi);
+		if (ret != -ENOIOCTLCMD)
+			goto done;
+	}
+
+	sensor_sd = hailo15_get_sensor_subdev(vid_node->mdev, vid_node->path);
+	if (!sensor_sd) {
+		pr_warn("%s - failed to get sensor subdev\n", __func__);
+		return -EINVAL;
+	}
+
+	ret = v4l2_subdev_call(sensor_sd, video, s_frame_interval, &fi);
+	if (ret) {
+		pr_warn("%s - s_frame_interval to subdev %s failed, err = (%pe)\n",
+			__func__, sensor_sd->name, ERR_PTR(ret));
+		ret = v4l2_subdev_call(sensor_sd, video, g_frame_interval, &fi);
+		if (ret) {
+			pr_warn("%s - g_frame_interval from subdev %s failed, err = (%pe)\n",
+				__func__, sensor_sd->name, ERR_PTR(ret));
+		}
+	}
+
+done:
+	a->parm.capture.timeperframe = fi.interval;
+
+	return ret;
+}
+
+static int hailo15_g_parm(struct file *file, void *fh,
+			  struct v4l2_streamparm *a)
+{
+	struct v4l2_subdev *sensor_sd;
+	struct v4l2_subdev_frame_interval fi = { 0 };
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	int ret = 0;
+
+	sensor_sd = hailo15_get_sensor_subdev(vid_node->mdev, vid_node->path);
+	if (!sensor_sd) {
+		pr_warn("%s - failed to get sensor subdev\n", __func__);
+		return -EINVAL;
+	}
+
+	ret = v4l2_subdev_call(sensor_sd, video, g_frame_interval, &fi);
+	if (ret) {
+		pr_warn("%s - failed to get frame rate from the sensor, got %d\n",
+			__func__, ret);
+	}
+	a->parm.capture.timeperframe = fi.interval;
+	a->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
+
+	return ret;
+}
+
+static int hailo15_reqbufs(struct file *file, void *priv,
+			struct v4l2_requestbuffers *p)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	struct media_pad *pad;
+	struct hailo15_reqbufs req;
+	int ret = 0;
+
+	ret = vb2_ioctl_reqbufs(file, priv, p);
+	if (ret) {
+		pr_debug("%s - vb2_ioctl_reqbufs failed\n", __func__);
+		return ret;
+	}
+
+	pad = media_entity_remote_pad(&vid_node->pad);
+	req.pad = pad->index;
+	req.num_buffers = p->count;
+
+	if (!hailo15_is_p2a_grp_id(vid_node->path)) {
+		ret = hailo15_subdev_call(vid_node, core, ioctl,
+		ISPIOC_V4L2_REQBUFS, &req);
+		if (ret) {
+			pr_err("%s - failed to set reqbufs on subdev, subdev call returned %d\n", __func__, ret);
+		}
+	}
+	return ret;
+}
+
+static int hailo15_videoc_queryctrl(struct file *file, void *fh,
+					struct v4l2_queryctrl *a)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	struct media_pad *pad;
+	struct hailo15_pad_queryctrl pad_query_ctrl;
+	int ret;
+
+	pad = media_entity_remote_pad(&vid_node->pad);
+	pad_query_ctrl.pad = pad->index;
+	pad_query_ctrl.query_ctrl = a;
+	ret = v4l2_subdev_call(vid_node->direct_sd, core, ioctl,
+				   HAILO15_PAD_QUERYCTRL, &pad_query_ctrl);
+
+	return ret;
+}
+
+static int hailo15_videoc_query_ext_ctrl(struct file *file, void *fh,
+					 struct v4l2_query_ext_ctrl *a)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	struct media_pad *pad;
+	struct hailo15_pad_query_ext_ctrl pad_query_ext_ctrl;
+	int ret;
+
+	pad = media_entity_remote_pad(&vid_node->pad);
+	pad_query_ext_ctrl.pad = pad->index;
+	pad_query_ext_ctrl.query_ext_ctrl = a;
+	ret = v4l2_subdev_call(vid_node->direct_sd, core, ioctl,
+				   HAILO15_PAD_QUERY_EXT_CTRL, &pad_query_ext_ctrl);
+
+	return ret;
+}
+
+static int hailo15_vidioc_g_ctrl(struct file *file, void *fh,
+				 struct v4l2_control *a)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	struct media_pad *pad;
+	struct hailo15_pad_control pad_control;
+	int ret;
+
+	pad = media_entity_remote_pad(&vid_node->pad);
+	pad_control.pad = pad->index;
+	pad_control.control = a;
+	ret = v4l2_subdev_call(vid_node->direct_sd, core, ioctl,
+				   HAILO15_PAD_G_CTRL, &pad_control);
+
+	return ret;
+}
+
+static int hailo15_vidioc_s_ctrl(struct file *file, void *fh,
+				 struct v4l2_control *a)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	struct media_pad *pad;
+	struct hailo15_pad_control pad_control;
+	int ret;
+
+	pad = media_entity_remote_pad(&vid_node->pad);
+	pad_control.pad = pad->index;
+	pad_control.control = a;
+	ret = v4l2_subdev_call(vid_node->direct_sd, core, ioctl,
+				   HAILO15_PAD_S_CTRL, &pad_control);
+
+	return ret;
+}
+
+static int hailo15_vidioc_g_ext_ctrls(struct file *file, void *fh,
+					  struct v4l2_ext_controls *a)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	struct media_pad *pad;
+	struct hailo15_pad_ext_controls pad_ext_controls;
+	int ret;
+
+	pad = media_entity_remote_pad(&vid_node->pad);
+	pad_ext_controls.pad = pad->index;
+	pad_ext_controls.ext_controls = a;
+	ret = v4l2_subdev_call(vid_node->direct_sd, core, ioctl,
+				   HAILO15_PAD_G_EXT_CTRLS, &pad_ext_controls);
+
+	return ret;
+}
+
+static int hailo15_vidioc_s_ext_ctrls(struct file *file, void *fh,
+					  struct v4l2_ext_controls *a)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	struct media_pad *pad;
+	struct hailo15_pad_ext_controls pad_ext_controls;
+	int ret;
+
+	pad = media_entity_remote_pad(&vid_node->pad);
+	pad_ext_controls.pad = pad->index;
+	pad_ext_controls.ext_controls = a;
+	ret = v4l2_subdev_call(vid_node->direct_sd, core, ioctl,
+				   HAILO15_PAD_S_EXT_CTRLS, &pad_ext_controls);
+
+	return ret;
+}
+
+static int hailo15_vidioc_try_ext_ctrls(struct file *file, void *fh,
+					struct v4l2_ext_controls *a)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	struct media_pad *pad;
+	struct hailo15_pad_ext_controls pad_ext_controls;
+	int ret;
+
+	pad = media_entity_remote_pad(&vid_node->pad);
+	pad_ext_controls.pad = pad->index;
+	pad_ext_controls.ext_controls = a;
+	ret = v4l2_subdev_call(vid_node->direct_sd, core, ioctl,
+				   HAILO15_PAD_TRY_EXT_CTRLS, &pad_ext_controls);
+
+	return ret;
+}
+
+static int hailo15_vidioc_querymenu(struct file *file, void *fh,
+					struct v4l2_querymenu *a)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	struct media_pad *pad;
+	struct hailo15_pad_querymenu pad_querymenu;
+	int ret;
+
+	pad = media_entity_remote_pad(&vid_node->pad);
+	pad_querymenu.pad = pad->index;
+	pad_querymenu.querymenu = a;
+	ret = v4l2_subdev_call(vid_node->direct_sd, core, ioctl,
+				   HAILO15_PAD_QUERYMENU, &pad_querymenu);
+	if (ret) {
+		pr_warn("%s - pad query menu from subdev %s failed, err = (%pe)\n",
+			__func__, vid_node->direct_sd->name, ERR_PTR(ret));
+	}
+
+	return ret;
+}
+
+static int hailo15_videoc_subscribe_event(struct v4l2_fh *fh,
+						const struct v4l2_event_subscription *sub)
+{
+	int ret = -EINVAL;
+	struct media_pad *pad;
+	struct v4l2_subdev *subdev;
+	struct hailo15_pad_stat_subscribe stat_sub;
+	struct hailo15_video_node *hailo15_vdev = video_get_drvdata(fh->vdev);
+
+	switch (sub->type) {
+	case V4L2_EVENT_CTRL:
+		ret = v4l2_ctrl_subscribe_event(fh, sub);
+		break;
+	case HAILO15_DEAMON_VIDEO_EVENT:
+		/* Daemon may have died with kernel_seq advanced past complete
+		 * (kernel posted an event, daemon hadn't written its ack). The
+		 * shm survives the process. Reset both counters on the new
+		 * daemon's first subscribe; gate on list_empty(&fh->subscribed)
+		 * so a re-subscribe on the same fd is a no-op and can't swallow
+		 * an in-flight kernel_seq. */
+		if (list_empty(&fh->subscribed))
+			hailo15_video_event_reset_seq(&hailo15_vdev->event_resource);
+		ret = v4l2_event_subscribe(fh, sub, 2, NULL);
+		break;
+	case HAILO15_UEVENT_ISP_STAT:
+		memset(&stat_sub, 0, sizeof(stat_sub));
+
+		subdev = hailo15_video_remote_subdev(hailo15_vdev);
+		if (subdev) {
+			pad = media_entity_remote_pad(&hailo15_vdev->pad);
+
+			stat_sub.pad = pad->index;
+			stat_sub.id = sub->id;
+			stat_sub.type = HAILO15_UEVENT_ISP_STAT;
+			ret = v4l2_subdev_call(subdev, core,
+					ioctl, HAILO15_PAD_STAT_SUBSCRIBE, &stat_sub);
+			if (!ret) {
+				if (ret) {
+					pr_warn("%s - pad stat subscribe to subdev %s failed, err = (%pe)\n",
+						__func__, subdev->name, ERR_PTR(ret));
+				}
+				ret = v4l2_event_subscribe(fh, sub, 8, NULL);
+			}
+		}
+		break;
+	default:
+		pr_debug("%s - got bad video event type: %u\n", __func__, sub->type);
+		return -EINVAL;
+	}
+
+	return ret;
+}
+
+static int hailo15_videoc_unsubscribe_event(struct v4l2_fh *fh,
+						const struct v4l2_event_subscription *sub)
+{
+	int ret = -EINVAL;
+	struct media_pad *pad;
+	struct v4l2_subdev *subdev;
+	struct hailo15_pad_stat_subscribe stat_sub;
+	struct hailo15_video_node *hailo15_vdev = video_get_drvdata(fh->vdev);
+
+	switch (sub->type) {
+	case V4L2_EVENT_CTRL:
+		ret = v4l2_event_unsubscribe(fh, sub);
+		break;
+	case HAILO15_DEAMON_VIDEO_EVENT:
+		ret = v4l2_event_unsubscribe(fh, sub);
+		break;
+	case HAILO15_UEVENT_ISP_STAT:
+		memset(&stat_sub, 0, sizeof(stat_sub));
+		subdev = hailo15_video_remote_subdev(hailo15_vdev);
+		if (subdev) {
+			ret = v4l2_event_unsubscribe(fh, sub);
+			if (ret) {
+				break;
+			}
+			pad = media_entity_remote_pad(&hailo15_vdev->pad);
+
+			stat_sub.pad = pad->index;
+			stat_sub.id = sub->id;
+			stat_sub.type = HAILO15_UEVENT_ISP_STAT;
+			ret = v4l2_subdev_call(subdev, core, ioctl, HAILO15_PAD_STAT_UNSUBSCRIBE, &stat_sub);
+			if (ret) {
+				pr_warn("%s - pad stat unsubscribe to subdev %s failed, err = (%pe)\n",
+					__func__, subdev->name, ERR_PTR(ret));
+			}
+		}
+		break;
+	default:
+		ret = -EINVAL;
+		break;
+	}
+
+	return ret;
+}
+
+static const struct v4l2_ioctl_ops video_ioctl_ops = {
+	.vidioc_querycap = hailo15_querycap,
+	.vidioc_enum_fmt_vid_cap = hailo15_enum_fmt_vid_cap,
+	.vidioc_g_fmt_vid_cap_mplane = hailo15_g_fmt_vid_cap,
+	.vidioc_s_fmt_vid_cap_mplane = hailo15_s_fmt_vid_cap,
+	.vidioc_try_fmt_vid_cap_mplane = hailo15_try_fmt_vid_cap,
+	.vidioc_streamon = hailo15_streamon,
+	.vidioc_streamoff = hailo15_streamoff,
+	.vidioc_s_parm = hailo15_s_parm,
+	.vidioc_g_parm = hailo15_g_parm,
+	.vidioc_reqbufs = hailo15_reqbufs,
+	.vidioc_queryctrl = hailo15_videoc_queryctrl,
+	.vidioc_query_ext_ctrl = hailo15_videoc_query_ext_ctrl,
+	.vidioc_g_ctrl = hailo15_vidioc_g_ctrl,
+	.vidioc_s_ctrl = hailo15_vidioc_s_ctrl,
+	.vidioc_g_ext_ctrls = hailo15_vidioc_g_ext_ctrls,
+	.vidioc_s_ext_ctrls = hailo15_vidioc_s_ext_ctrls,
+	.vidioc_try_ext_ctrls = hailo15_vidioc_try_ext_ctrls,
+	.vidioc_querymenu = hailo15_vidioc_querymenu,
+	.vidioc_create_bufs = vb2_ioctl_create_bufs,
+	.vidioc_querybuf = vb2_ioctl_querybuf,
+	.vidioc_qbuf = vb2_ioctl_qbuf,
+	.vidioc_dqbuf = vb2_ioctl_dqbuf,
+	.vidioc_expbuf = vb2_ioctl_expbuf,
+	.vidioc_subscribe_event = hailo15_videoc_subscribe_event,
+	.vidioc_unsubscribe_event = hailo15_videoc_unsubscribe_event,
+};
+
+/* is_buf_time_synced - is whether this function is called from buffer_done (so timing are synced),
+	 or it's the first buffer processed.
+	 this boolean is false when buffer process is called from userspace queue of buffer (we ran out of buffers)
+	 in that case, we don't control the time in which the user called this ioctl,
+	 this means that the time is not "synced" - and later on, we'll treat this buffer differently.
+*/
+static int hailo15_video_device_process_vb2_buffer(struct vb2_buffer *vb, bool is_buf_time_synced)
+{
+	struct hailo15_video_node *vid_node = queue_to_node(vb->vb2_queue);
+	struct vb2_v4l2_buffer *vbuf =
+		container_of(vb, struct vb2_v4l2_buffer, vb2_buf);
+	struct hailo15_buffer *buf =
+		container_of(vbuf, struct hailo15_buffer, vb);
+	struct hailo15_dma_ctx *ctx;
+
+	if (WARN_ON(!vid_node) || WARN_ON(!vid_node->direct_sd)) {
+		pr_err("%s - returning -EINVAL\n", __func__);
+		return -EINVAL;
+	}
+
+	pr_debug("%s - buf->dma[%d]: %llx\n", __func__, 0, buf->dma[0]);
+
+	buf->grp_id = vid_node->path;
+	ctx = v4l2_get_subdevdata(vid_node->direct_sd);
+	return hailo15_video_node_buffer_process(ctx, vid_node->path, buf, is_buf_time_synced);
+}
+
+// inner implementation of fast toggle - after param checks
+static int do_fast_toggle(struct hailo15_video_node *vid_node, struct hailo15_dma_ctx *ctx, enum fast_toggle_type toggle_type)
+{
+	int ret;
+	struct hailo15_buffer *buf;
+
+	// This is a prerequisite for fast toggle - so do not start if no buffer available
+	buf = vid_node->fast_toggle_priming_buf;
+	if (!buf) {
+		pr_err("%s - no priming buffer available for fast toggle - should never happen at this point!\n", __func__);
+		return -EIO;
+	}
+
+	// ------------- TURN OFF - stream stop logic -----------------
+
+	trace_vid_cap_fast_toggle_teardown(vid_node->path, toggle_type);
+
+	// stop vid10 + vid2 stream (by this order)
+	// Of course, this is relevant only to certain fast toggle types. subdevs handle that logic
+	ret = hailo15_video_node_subdev_fast_toggle_set_status(vid_node, FAST_TOGGLE_TEARDOWN, toggle_type);
+	if (ret) {
+		pr_err("%s - failed to apply priming in subdevs, subdev call returned %d\n", __func__, ret);
+		return ret;
+	}
+
+	trace_vid_cap_fast_toggle_stream_off(vid_node->path, toggle_type);
+
+	ret = hailo15_subdev_call(vid_node, video, s_stream, STREAM_OFF);
+	if (ret) {
+		pr_err("%s - failed to set stream on subdev, subdev call returned %d\n", __func__, ret);
+		return ret;
+	}
+
+	// Do not release buffers, if we would have wanted to,
+	// we should have ran: hailo15_video_node_queue_clean(vid_node, VB2_BUF_STATE_ERROR);
+	vid_node->streaming = STREAM_OFF;
+
+	// trace_printk("%s - posting release pipeline event start\n", __func__);
+
+	trace_vid_cap_fast_toggle_release_pipeline(vid_node->path, toggle_type);
+	
+	ret = hailo15_video_post_event_release_pipeline_fast_toggle(vid_node);
+	if (ret) {
+		pr_err("%s - post event release pipeline failed\n", __func__);
+		return ret;
+	}
+	// trace_printk("%s - posting release pipeline event end\n", __func__);
+	vid_node->pipeline_init = 0;
+	vid_node->sequence = 0;
+
+	/* ------------- TURN ON - stream start logic (assume no pixel format changes) --------------- */
+
+	if (toggle_type != TOGGLE_MERCURY_SDR_SDR) {
+		trace_vid_cap_fast_toggle_apply_priming(vid_node->path, toggle_type);
+		// Specifically for sdr->sdr - no need for priming - so don't apply priming values
+		ret = hailo15_video_node_subdev_fast_toggle_set_status(vid_node, FAST_TOGGLE_APPLY_PRIMING, toggle_type);
+		if (ret) {
+			pr_err("%s - failed to apply priming in subdevs, subdev call returned %d\n", __func__, ret);
+			return ret;
+		}
+	}
+	trace_vid_cap_fast_toggle_create_pipeline(vid_node->path, toggle_type);
+
+	// pipeline create
+	ret = hailo15_video_create_pipeline(vid_node, true);
+	if (ret) {
+		pr_err("%s - failed to create pipeline during fast toggle: %d\n", __func__, ret);
+		return ret;
+	}
+
+	vid_node->pipeline_init = 1;
+
+
+	ret = hailo15_video_node_fast_toggle_stream(ctx, vid_node->path, toggle_type);
+	if (ret) {
+		dev_err(vid_node->dev,
+			"can't fast toggle stream on node %d with error %d\n", vid_node->id, ret);
+		return ret;
+	}
+
+	// Add priming buffer to buf queue, then process it
+	// We add it to the list, as buffer_done expects to remove it from there later on
+	// Note that ISP driver cleanup released all buffers back to vid-cap
+	// this means that prev_buf is the only buffer not cleaned up yet - so use it for buffer queue if exists
+	mutex_lock(&vid_node->qlock);
+	trace_vid_cap_fast_toggle_priming_buf_used(vid_node->path,
+						   buf->vb.vb2_buf.index,
+						   buf->dma[0],
+						   toggle_type);
+	hailo15_buf_list_add(buf, &vid_node->buf_queue);
+	vid_node->fast_toggle_priming_buf = NULL;
+	if (vid_node->prev_buf != NULL) {
+		/* The old prev_buf contains the last frame from the previous mode.
+		 * Mark it for silent discard — buffer_done will drop it instead
+		 * of returning it to userspace as a stale frame. */
+		vid_node->drop_prev_buf = true;
+	}
+	vid_node->is_first_buffer_processed = true;
+	mutex_unlock(&vid_node->qlock);
+
+	// In order for stream to start, ISP driver must have it's cur_buf - so send 1 buffer to processing
+	// If we won't process a buffer here, ISP's mi_start will fail due to missing cur_buf
+	// the priming buffer is our way to guarentee such buffer is available right on fast toggle
+	ret = hailo15_video_device_process_vb2_buffer(&buf->vb.vb2_buf, true);
+	if (ret) {
+		mutex_lock(&vid_node->qlock);
+		hailo15_buf_list_del(buf);
+		mutex_unlock(&vid_node->qlock);
+		dev_err(vid_node->dev, "can't process priming buffer on node %d with error %d\n", vid_node->id, ret);
+		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+		return ret;
+	}
+
+	// start stream (subdev - will call stream on post event)
+	ret = hailo15_video_node_subdev_set_stream(vid_node, STREAM_ON);
+	if (ret) {
+		dev_err(vid_node->dev,
+			"can't start stream on node %d with error %d\n", vid_node->id, ret);
+		return ret;
+	}
+	vid_node->streaming = STREAM_ON;
+
+	return ret;
+}
+
+// TODO for v1.12 - once the user pass more than a single number to represent which toggle to perform
+// we'll need to adjust this function.
+static bool fast_toggle_is_supported(enum fast_toggle_type toggle_type)
+{
+	switch(toggle_type) {
+		case TOGGLE_MERCURY_SDR_SDR:
+		case TOGGLE_MERCURY_SDR_HDR:
+		case TOGGLE_MERCURY_HDR_SDR:
+		case TOGGLE_MERCURY_SDR_PREISP:
+		case TOGGLE_MERCURY_PREISP_SDR:
+		case TOGGLE_PLUTO_SDR_HDR:
+		case TOGGLE_PLUTO_HDR_SDR:
+		case TOGGLE_PLUTO_SDR_PREISP:
+		case TOGGLE_PLUTO_PREISP_SDR:
+		case TOGGLE_PLUTO_HDR_PREISP:
+		case TOGGLE_PLUTO_PREISP_HDR:
+			return true;
+		default:
+			return false;
+	}
+}
+
+static int fast_toggle(struct hailo15_video_node *vid_node, enum fast_toggle_type toggle_type)
+{
+	int ret = 0;
+	struct hailo15_dma_ctx *ctx;
+
+	if (WARN_ON(!vid_node)) {
+		pr_err("%s - failed to get vid_node\n",__func__);
+		return -EINVAL;
+	}
+
+	if (!vid_node->streaming) {
+		pr_err("%s - fast toggle called when not streaming\n",__func__);
+		return -EAGAIN;
+	}
+
+	if (fast_toggle_is_supported(toggle_type) == false) {
+		pr_err("%s - invalid toggle type %d\n", __func__, toggle_type);
+		return -EINVAL;
+	}
+
+	if (vid_node->path != HAILO15_VID_GRP_SX_CSI0_ISP_MP) {
+		pr_err("%s - fast toggle not supported on P2A nodes\n", __func__);
+		return -EINVAL;
+	}
+
+	ctx = v4l2_get_subdevdata(vid_node->direct_sd);
+
+	if (ctx == NULL) {
+		pr_err("%s - failed to get dma ctx from direct sd\n", __func__);
+		return -EINVAL;
+	}
+
+	ret = do_fast_toggle(vid_node, ctx, toggle_type);
+	if (ret) {
+		pr_err("%s - fast toggle failed!, do_fast_toggle ret=%d\n", __func__, ret);
+		return ret;
+	}
+
+	return ret;
+}
+
+static long hailo15_video_node_unlocked_ioctl(struct file *file,
+						  unsigned int cmd,
+						  unsigned long arg)
+{
+	long ret = -EINVAL;
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	struct hailo15_dma_ctx *ctx;
+	uint64_t fc = 0;
+	struct hailo15_vsm vsm;
+	struct hailo15_get_vsm_params vsm_params;
+	u8 tuning_state;
+	u8 timestamp_mode;
+	enum fast_toggle_type toggle_type;
+
+	if (WARN_ON(!vid_node)) {
+		return -EINVAL;
+	}
+
+	switch (cmd) {
+	case VIDEO_FPS_MONITOR_SUBDEV_IOC:
+		fc = 0;
+		mutex_lock(&vid_node->ioctl_mutex);
+		ctx = v4l2_get_subdevdata(vid_node->direct_sd);
+		ret = hailo15_video_node_get_frame_count(ctx, vid_node->path, &fc);
+		if (ret) {
+			mutex_unlock(&vid_node->ioctl_mutex);
+			break;
+		}
+		if (copy_to_user((void __user *)arg, &fc, sizeof(fc))) {
+			ret = -EFAULT;
+			mutex_unlock(&vid_node->ioctl_mutex);
+			break;
+		}
+		mutex_unlock(&vid_node->ioctl_mutex);
+		ret = 0;
+		break;
+	case VIDEO_GET_VSM_IOC:
+		ret = copy_from_user(&vsm_params, (void __user *)arg,
+					 sizeof(struct hailo15_get_vsm_params));
+		if (ret) {
+			ret = -EINVAL;
+			break;
+		}
+		mutex_lock(&vid_node->ioctl_mutex);
+		ctx = v4l2_get_subdevdata(vid_node->direct_sd);
+		ret = hailo15_video_node_get_vsm(ctx, vid_node->path,
+						 vsm_params.index, &vsm);
+		if (ret) {
+			mutex_unlock(&vid_node->ioctl_mutex);
+			break;
+		}
+		if (copy_to_user(&(((struct hailo15_get_vsm_params __user *)arg)->vsm), &vsm,
+				 sizeof(struct hailo15_vsm))) {
+			ret = -EFAULT;
+			mutex_unlock(&vid_node->ioctl_mutex);
+			break;
+		}
+		mutex_unlock(&vid_node->ioctl_mutex);
+		ret = 0;
+		break;
+	case VIDEO_WAIT_FOR_STREAM_START:
+		mutex_lock(&vid_node->ioctl_mutex);
+		if(vid_node->streaming){
+			ret = 0;
+			mutex_unlock(&vid_node->ioctl_mutex);
+			break;
+		}
+		mutex_unlock(&vid_node->ioctl_mutex);
+		ret = wait_event_interruptible(vid_node->stream_wait, vid_node->streaming);
+		break;
+	case VIDEO_TUNING_STATE:
+		ret = copy_from_user(&tuning_state, (void __user *)arg,
+					 sizeof(tuning_state));
+		if (ret) {
+			ret = -EINVAL;
+			break;
+		}
+		mutex_lock(&vid_node->ioctl_mutex);
+		vid_node->tuning_state = tuning_state;
+		ret = v4l2_subdev_call(vid_node->direct_sd, core, ioctl, HAILO15_TUNING,
+			&vid_node->tuning_state);
+		if (ret) {
+			pr_err("%s - failure on subdev call, return code %ld\n", __func__, ret);
+		}
+		mutex_unlock(&vid_node->ioctl_mutex);
+		break;
+	case VIDEO_HDR_TIME_STAMP_MODE_SET:
+		ret = copy_from_user(&timestamp_mode, (void __user *)arg,
+					 sizeof(timestamp_mode));
+		if (ret) {
+			ret = -EINVAL;
+			break;
+		}
+		if(timestamp_mode != HDR_TIMESTAMP_MODE_ON &&
+		   timestamp_mode != HDR_TIMESTAMP_MODE_OFF) {
+			pr_err("%s - invalid timestamp_mode %d\n", __func__, timestamp_mode);
+			ret = -EINVAL;
+			break;
+		}
+		mutex_lock(&vid_node->ioctl_mutex);
+		vid_node->hdr_timestamp_mode = timestamp_mode;
+		mutex_unlock(&vid_node->ioctl_mutex);
+		break;
+	case VIDEO_HDR_TIME_STAMP_MODE_GET:
+		mutex_lock(&vid_node->ioctl_mutex);
+		if (copy_to_user((void __user *)arg, &vid_node->hdr_timestamp_mode,
+				 sizeof(vid_node->hdr_timestamp_mode))) {
+			ret = -EFAULT;
+			mutex_unlock(&vid_node->ioctl_mutex);
+			break;
+		}
+		mutex_unlock(&vid_node->ioctl_mutex);
+		ret = 0;
+		break;
+	case VIDEO_PIPELINE_STATE_GET:
+		mutex_lock(&vid_node->ioctl_mutex);
+		if (copy_to_user((void __user *)arg, &vid_node->pipeline_init,
+					sizeof(vid_node->pipeline_init))) {
+			ret = -EFAULT;
+			mutex_unlock(&vid_node->ioctl_mutex);
+			break;
+		}
+		mutex_unlock(&vid_node->ioctl_mutex);
+		ret = 0 ;
+		break;
+	case VIDEO_FAST_TOGGLE:
+
+		if (vid_node->fast_toggle_state != FAST_TOGGLE_PRIMING) {
+			pr_warn("%s - fast toggle called when not in priming state %d\n", __func__, vid_node->fast_toggle_state);
+			return -EFAULT;
+		}
+
+		// Which transition should be performed - get this argument
+		if (copy_from_user(&toggle_type, (void __user *)arg, sizeof(toggle_type))) {
+			ret = -EFAULT;
+			break;
+		}
+
+		// If called when system not ready, leave the state as priming, don't toggle
+		if (vid_node->fast_toggle_priming_buf == NULL) {
+			pr_info("%s - fast toggle called without priming buffer set\n", __func__);
+			return -EAGAIN;
+		}
+
+		trace_vid_cap_fast_toggle_start(vid_node->path, toggle_type);
+
+		// Perform fast toggle! (ioctl params check inside function)
+		vid_node->fast_toggle_state = FAST_TOGGLE_ACTIVE;
+		ret = fast_toggle(vid_node, toggle_type);
+		if (ret) {
+			pr_err("%s - fast toggle failed with error %d\n", __func__, (int)ret);
+		}
+
+		// If priming buf still exists (toggle failed before using it), return it to user
+		if (vid_node->fast_toggle_priming_buf != NULL) {
+			trace_vid_cap_fast_toggle_priming_buf_error(vid_node->path,
+								    vid_node->fast_toggle_priming_buf->vb.vb2_buf.index,
+								    vid_node->fast_toggle_priming_buf->dma[0]);
+			vb2_buffer_done(&vid_node->fast_toggle_priming_buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+			vid_node->fast_toggle_priming_buf = NULL;
+		}
+
+		// Notify subdevs that fast toggle is complete.
+		// Do not override ret if already error from fast toggle
+		if (ret) {
+			hailo15_video_node_subdev_fast_toggle_set_status(vid_node, FAST_TOGGLE_NONE, toggle_type);
+		} else {
+			ret = hailo15_video_node_subdev_fast_toggle_set_status(vid_node, FAST_TOGGLE_NONE, toggle_type);
+		}
+		vid_node->fast_toggle_state = FAST_TOGGLE_NONE;
+		trace_vid_cap_fast_toggle_complete(vid_node->path, toggle_type, ret);
+		break;
+	case VIDEO_FAST_TOGGLE_PRIMING:
+		trace_vid_cap_fast_toggle_priming_start(vid_node->path);
+
+		if (vid_node->fast_toggle_state != FAST_TOGGLE_NONE) {
+			pr_err("%s - fast toggle priming called when another fast toggle is in progress %d\n", __func__, vid_node->fast_toggle_state);
+			ret = -EALREADY;
+			trace_vid_cap_fast_toggle_priming_complete(vid_node->path, ret);
+			break;
+		}
+
+		// toggle type is not known at this point - so set to max (it shouldn't be used)
+		ret = hailo15_video_node_subdev_fast_toggle_set_status(vid_node, FAST_TOGGLE_PRIMING, FAST_TOGGLE_TYPE_MAX);
+		if (ret) {
+			pr_err("%s - failed to prime before fast toggle on subdev, subdev call returned %ld\n", __func__, ret);
+			trace_vid_cap_fast_toggle_priming_complete(vid_node->path, ret);
+			break;
+		}
+		vid_node->fast_toggle_state = FAST_TOGGLE_PRIMING;
+		trace_vid_cap_fast_toggle_priming_complete(vid_node->path, 0);
+		break;
+	case VIDEO_EVENT_COMPLETE:
+		/* Daemon calls this after writing ack to shared memory.
+		 * Wake the kernel thread waiting in event_wait_complete. */
+		wake_up(&vid_node->event_resource.wait_q);
+		break;
+	default:
+		/* video ioctls locks are handled by v4l2 framework */
+		ret = video_ioctl2(file, cmd, arg);
+		break;
+	}
+
+	return ret;
+}
+
+static int hailo15_video_node_stream_cancel(struct hailo15_video_node *vid_node)
+{
+	int ret;
+
+	if (!vid_node->streaming) {
+		dev_info(vid_node->dev, "stream_cancel called when not streaming. path: %d\n", vid_node->path);
+		return -EINVAL;
+	}
+
+	/* Disable buffer queuing before cleanup to prevent race */
+	vid_node->queue_accepting_buffers = false;
+	vid_node->streaming = STREAM_OFF;
+	ret = hailo15_video_node_subdev_set_stream(vid_node, STREAM_OFF);
+	if (ret) {
+		dev_err(vid_node->dev,
+			"can't stop stream on node %d with error %d\n",
+			vid_node->id, ret);
+	}
+
+	hailo15_video_node_queue_clean(vid_node, VB2_BUF_STATE_ERROR);
+
+	if (!hailo15_is_p2a_grp_id(vid_node->path) &&
+	    !hailo15_is_mcm_raw_wr_grp_id(vid_node->path)) {
+		ret = hailo15_video_post_event_release_pipeline(vid_node);
+		if (ret) {
+			pr_err("%s - post event release pipeline failed\n",
+				   __func__);
+		}
+	}
+	vid_node->pipeline_init = 0;
+	vid_node->sequence = 0;
+	vid_node->fast_toggle_state = FAST_TOGGLE_NONE;
+	return ret;
+}
+
+static int hailo15_video_node_open(struct file *file)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	int ret;
+
+	ret = v4l2_fh_open(file);
+	if (ret) {
+		pr_err("%s - failed to open vid_node %d\n", __func__,
+			   vid_node->id);
+		return ret;
+	}
+
+	return 0;
+}
+
+// todo: make sure this doesn't run in parallel to fast toggle?
+static int hailo15_video_node_release(struct file *file)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	int ret;
+
+	if (vid_node->streaming &&
+		file->private_data == vid_node->queue.owner) {
+		ret = hailo15_video_node_stream_cancel(vid_node);
+		if (ret == -EAGAIN) {
+			/* Daemon-event timeout: HW chain already stopped
+			 * upstream of the post_event, so the data path is
+			 * drained. Fall through to vb2_fop_release so the
+			 * queue state is cleared; otherwise the next open
+			 * inherits stale num_buffers/owner. */
+			pr_warn("%s: stream_cancel timed out on daemon event ack; freeing queue state anyway\n",
+				__func__);
+		} else if (ret) {
+			/* Non-recoverable cancel failure. HW DMA state
+			 * uncertain; do not free the queue. fd is still
+			 * closed by __fput. */
+			pr_err("%s - stream_cancel failed returning: %d\n",
+				   __func__, ret);
+			return ret;
+		}
+	}
+
+	if (file->private_data == vid_node->queue.owner) {
+		return vb2_fop_release(file);
+	}
+
+	return 0;
+}
+
+static int hailo15_video_node_mmap(struct file *file,
+				   struct vm_area_struct *vma)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	struct hailo15_rmem rmem;
+	struct hailo15_event_resource resource;
+	unsigned long video_event_pfn;
+	unsigned long sd_event_pfn;
+	unsigned long size;
+	struct hailo15_dma_ctx *ctx;
+	int ret;
+	int sd_event_valid = 0;
+
+	memset(&rmem, 0, sizeof(rmem));
+
+	ctx = v4l2_get_subdevdata(vid_node->direct_sd);
+
+	rmem.port = vid_node->path;
+	ret = hailo15_video_node_get_rmem(ctx, vid_node->path, &rmem);
+	if (!ret) {
+		if (rmem.addr && vma->vm_pgoff == (rmem.addr >> PAGE_SHIFT)) {
+			if (vma->vm_end - vma->vm_start > rmem.size) {
+				return -ENOMEM;
+			}
+			return remap_pfn_range(
+				vma, vma->vm_start, vma->vm_pgoff,
+				vma->vm_end - vma->vm_start,
+				pgprot_noncached(vma->vm_page_prot));
+		}
+	}
+
+	video_event_pfn = vid_node->event_resource.phy_addr >> PAGE_SHIFT;
+	ret = hailo15_video_node_get_event_resource(ctx, vid_node->path, &resource);
+	sd_event_pfn = !ret ? resource.phy_addr >> PAGE_SHIFT : 0;
+	if (!ret) {
+		sd_event_valid = 1;
+	}
+
+	pr_debug(
+		"%s - vma->vm_pgoff: 0x%lx, video_event_pfn: 0x%lx, sd_event_pfn: 0x%lx\n",
+		__func__, vma->vm_pgoff, video_event_pfn, sd_event_pfn);
+
+	if (vma->vm_pgoff == video_event_pfn || (vma->vm_pgoff == sd_event_pfn && sd_event_valid)) {
+		size = vma->vm_end - vma->vm_start;
+
+		/* mmap size alignment granularity set to PAGE_SIZE.
+		   event_resource size is slightly greater than 4 x PAGE_SIZE,
+		   Thus, compare expression checking is to "size + PAGE_SIZE" */
+		if (size > HAILO15_EVENT_RESOURCE_MAX_MAP_SIZE) {
+			pr_err("%s - not enough memory for 0x%lx size\n",
+				   __func__, size);
+			return -ENOMEM;
+		}
+
+		return remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff, size,
+					   vma->vm_page_prot);
+	}
+
+	return vb2_fop_mmap(file, vma);
+}
+
+static __poll_t hailo15_video_node_poll(struct file *file,
+						struct poll_table_struct *wait)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	if (vid_node->streaming) {
+		return vb2_poll(&vid_node->queue, file, wait);
+	}
+	return v4l2_ctrl_poll(file, wait);
+}
+static struct v4l2_file_operations video_ops = {
+	.owner = THIS_MODULE,
+	.read = vb2_fop_read,
+	.mmap = hailo15_video_node_mmap,
+	.poll = hailo15_video_node_poll,
+	.open = hailo15_video_node_open,
+	.release = hailo15_video_node_release,
+	.unlocked_ioctl = hailo15_video_node_unlocked_ioctl,
+};
+
+static int hailo15_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
+				   unsigned int *nplanes, unsigned int sizes[],
+				   struct device *alloc_devs[])
+{
+	struct hailo15_video_node *vid_node = queue_to_node(q);
+	const struct hailo15_video_fmt *format;
+	int plane, line_length, height, bytesperline;
+	format = NULL;
+	if (WARN_ON(!vid_node)) {
+		pr_err("%s - returning -EINVAL\n", __func__);
+		return -EINVAL;
+	}
+
+	if (q->num_buffers >= MAX_NUM_FRAMES) {
+		dev_info(vid_node->dev, "already allocated maximum buffers");
+		return -EINVAL;
+	}
+
+	if (*nbuffers > MAX_NUM_FRAMES - q->num_buffers)
+		*nbuffers = MAX_NUM_FRAMES - q->num_buffers;
+
+	/* Enable buffer queuing when buffers are allocated */
+	if (*nbuffers > 0) {
+		vid_node->queue_accepting_buffers = true;
+	}
+
+	format =
+		hailo15_fourcc_get_format(vid_node->fmt.fmt.pix_mp.pixelformat, vid_node->fmt.fmt.pix_mp.num_planes);
+	if (!format) {
+		pr_err("%s - failed to get fourcc format\n", __func__);
+		return -EINVAL;
+	}
+
+	line_length = ALIGN_UP(vid_node->fmt.fmt.pix_mp.width, STRIDE_ALIGN);
+	height = vid_node->fmt.fmt.pix_mp.height;
+
+	if(*nplanes){
+		if(*nplanes != format->num_planes)
+			return -EINVAL;
+		for (plane = 0; plane < format->num_planes; ++plane) {
+			bytesperline = hailo15_plane_get_bytesperline(
+				format, line_length, plane);
+			if (sizes[plane] !=
+				hailo15_plane_get_sizeimage(format, height,
+							bytesperline, plane)) {
+				return -EINVAL;
+			}
+		}
+	}
+	else {
+		*nplanes = format->num_planes;
+		for (plane = 0; plane < format->num_planes; ++plane) {
+			bytesperline = hailo15_plane_get_bytesperline(
+				format, line_length, plane);
+			sizes[plane] = hailo15_plane_get_sizeimage(
+				format, height, bytesperline, plane);
+		}
+	}
+	return 0;
+}
+
+static int hailo15_video_node_buffer_init(struct vb2_buffer *vb)
+{
+	struct hailo15_video_node *vid_node = queue_to_node(vb->vb2_queue);
+	struct vb2_v4l2_buffer *vbuf =
+		container_of(vb, struct vb2_v4l2_buffer, vb2_buf);
+	struct hailo15_buffer *buf =
+		container_of(vbuf, struct hailo15_buffer, vb);
+	struct media_pad *pad;
+	int plane;
+
+	memset(buf->dma, 0, sizeof(buf->dma));
+	hailo15_buf_list_init(buf);
+	if (vb->num_planes > FMT_MAX_PLANES) {
+		pr_info("%s - num of planes too big: %u\n", __func__,
+			vb->num_planes);
+		return -EINVAL;
+	}
+
+	for (plane = 0; plane < vb->num_planes; ++plane) {
+		buf->dma[plane] =
+			vb2_dma_contig_plane_dma_addr(vb, plane);
+	}
+
+	pad = media_entity_remote_pad(&vid_node->pad);
+
+	if (!pad) {
+		dev_err(vid_node->dev,
+			"can't queue buffer, got null pad for node %d\n",
+			vid_node->id);
+		return -EINVAL;
+	}
+
+	buf->pad = pad;
+
+	buf->sd = media_entity_to_v4l2_subdev(pad->entity);
+
+	return 0;
+}
+
+static int hailo15_video_device_queue_vb2_buffer(struct vb2_buffer *vb)
+{
+	struct hailo15_video_node *vid_node = queue_to_node(vb->vb2_queue);
+	struct vb2_v4l2_buffer *vbuf =
+		container_of(vb, struct vb2_v4l2_buffer, vb2_buf);
+	struct hailo15_buffer *buf =
+		container_of(vbuf, struct hailo15_buffer, vb);
+	struct hailo15_dma_ctx *ctx;
+
+	if (WARN_ON(!vid_node) || WARN_ON(!vid_node->direct_sd)) {
+		pr_err("%s - returning -EINVAL\n", __func__);
+		return -EINVAL;
+	}
+
+	pr_debug("%s - buf->dma[%d]: %llx\n", __func__, 0, buf->dma[0]);
+
+	buf->grp_id = vid_node->path;
+	ctx = v4l2_get_subdevdata(vid_node->direct_sd);
+	return hailo15_video_node_buffer_queue(ctx, vid_node->path, buf);
+}
+
+static void hailo15_buffer_queue(struct vb2_buffer *vb)
+{
+	struct hailo15_video_node *vid_node = queue_to_node(vb->vb2_queue);
+	struct vb2_v4l2_buffer *vbuf = container_of(vb, struct vb2_v4l2_buffer, vb2_buf);
+	struct hailo15_buffer *buf = container_of(vbuf, struct hailo15_buffer, vb);
+	int ret;
+
+	if (WARN_ON(!vb) || WARN_ON(!vb->vb2_queue)) {
+		pr_err("%s - WARN_ON(!vb) || WARN_ON(!vb->vb2_queue), returning\n",
+			   __func__);
+		return;
+	}
+
+	if (WARN_ON(!vid_node)) {
+		pr_err("%s - WARN_ON(!vid_node), returning\n", __func__);
+		return;
+	}
+
+	if (vid_node->fast_toggle_state == FAST_TOGGLE_PRIMING) {
+		if (vid_node->fast_toggle_priming_buf == NULL) {
+			vid_node->fast_toggle_priming_buf = buf;
+			trace_vid_cap_fast_toggle_priming_buf_saved(vid_node->path,
+								    buf->vb.vb2_buf.index,
+								    buf->dma[0]);
+			return;
+		}
+	}
+
+	/* if the list is empty, it will be called twice. */
+	if (hailo15_video_node_buffer_init(vb)) {
+		pr_err("%s - failed hailo15_video_node_buffer_init, returning\n",
+			   __func__);
+		return;
+	}
+
+	/* On P2A flow - let rxwrapper manage FIFO of buffers */
+	if (hailo15_is_p2a_grp_id(vid_node->path)) {
+		if (hailo15_video_device_queue_vb2_buffer(vb)) {
+			pr_err("%s - failed hailo15_video_device_queue_vb2_buffer, returning\n", __func__);
+		}
+		return;
+	}
+
+	mutex_lock(&vid_node->qlock);
+
+	/* Check if buffer queuing is allowed - prevents race during stream stop */
+	if (!vid_node->queue_accepting_buffers) {
+		mutex_unlock(&vid_node->qlock);
+		pr_info("%s - queue not accepting buffers, returning buffer to vb2\n", __func__);
+		vb2_buffer_done(vb, VB2_BUF_STATE_ERROR);
+		return;
+	}
+
+	/*
+	Usually, buffer process (pass buffer to isp driver) is done only on buffer done.
+	The logic is to take a buffer out of the irqlist, and process it (give it to isp driver).
+	However, an edge case occurs when the list is empty (the last buffer done, if called, didn't process any buffer)
+	*/
+	if (list_empty(&vid_node->buf_queue)) {
+		/* If that's the first buffer of stream, we should process it on our own and exit function*/
+		if (!vid_node->is_first_buffer_processed) {
+			if (hailo15_video_device_process_vb2_buffer(vb, true)) {
+				pr_err("%s - Could not process first buffer\n", __func__);
+				goto buffer_queue_exit_bad;
+			}
+
+			vid_node->is_first_buffer_processed = true;
+			goto buffer_queue_exit_good;
+		}
+
+		/*
+		If the list got empty mid-stream:
+			- On SDR/HDR: save the buffer to the list (vid_node->buf_queue), and insert it after the next buffer done
+			    - this is important, as the only valid time to process the next buffer is after getting buffer_done on the previous.
+			- On injection mode: process the buffer immediately, as buffer_done will never be called again otherwise.
+
+			Injection tool forces us to treat it differently, and since this kernel module is not aware of it being in use or not,
+			we can only call hailo15_video_device_process_vb2_buffer with additional parameter, specifying whether it's a mid-stream
+			out-of-sync buffer, or first buffer being processed.
+		*/
+		ret = hailo15_video_device_process_vb2_buffer(vb, false);
+		if (ret != 0 && ret != -EAGAIN) {
+			/* EAGAIN means we are not in injection tool mode, and buf_done can later process the buffer again, in sync */
+			pr_err("%s - Could not process mid-stream buffer\n", __func__);
+			goto buffer_queue_exit_bad;
+		}
+	}
+	buf->grp_id = vid_node->path;
+
+buffer_queue_exit_good:
+	/* Add given buffer to list of queued buffers - this list is being emptied on buf_done
+	 * (we insert/process new buffer exactly after the previous one is done)
+	 */
+	hailo15_buf_list_add_tail(buf, &vid_node->buf_queue);
+	trace_vid_cap_buffer_queue(vid_node->path, buf->vb.vb2_buf.index,
+				  buf->dma[0], ktime_get_ns());
+
+buffer_queue_exit_bad:
+	mutex_unlock(&vid_node->qlock);
+}
+
+static int hailo15_video_device_buffer_dequeue(struct hailo15_dma_ctx *ctx,
+	struct hailo15_buffer *buf,
+	int grp_id)
+{
+	int ret;
+	struct hailo15_video_node *vid_node = NULL;
+
+	if (grp_id < 0 || grp_id >= HAILO15_VID_GRP_MAX)
+		return -EINVAL;
+
+	ret = hailo15_video_node_get_private_data(ctx, grp_id,
+						  (void **)&vid_node);
+	if (ret)
+		return ret;
+
+	if (WARN_ON(!vid_node)) {
+		pr_err("%s - WARN_ON(!vid_node), returning\n", __func__);
+		return -EINVAL;
+	}
+
+	if (buf != NULL) {
+		if (hailo15_is_p2a_grp_id(vid_node->path)) {
+			buf->vb.sequence = vid_node->sequence++;
+		}
+		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+	}
+	return 0;
+}
+
+static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
+						struct hailo15_buffer *buf,
+						int grp_id)
+{
+	struct hailo15_video_node *vid_node;
+	struct hailo15_buffer *next_buffer;
+	struct hailo15_buffer *prev_buf;
+	int ret;
+
+	vid_node = NULL;
+	if (grp_id < 0 || grp_id >= HAILO15_VID_GRP_MAX)
+		return -EINVAL;
+
+	if (!ctx) {
+		pr_err("%s - ctx is NULL, returning\n", __func__);
+		return -EINVAL;
+	}
+
+	ret = hailo15_video_node_get_private_data(ctx, grp_id,
+						  (void **)&vid_node);
+	if (ret)
+		return ret;
+
+	if (WARN_ON(!vid_node)) {
+		pr_err("%s - WARN_ON(!vid_node), returning\n", __func__);
+		return -EINVAL;
+	}
+
+	/* Delete buffer from irqlist.
+	   This must happen before the buffer is passed to
+	   vb2_buffer_done() and thus can be dequeued by the user and potentially
+	   re-inserted into the irqlist while it is still in the irqlist.
+	   vb2_buffer_done() itself is invoked after dropping the lock. */
+	mutex_lock(&vid_node->qlock);
+	if (hailo15_is_p2a_grp_id(vid_node->path)) {
+		/* not isp flow nor MCM raw write flow, this is P2A flow - we can release buffer immediately */
+		vid_node->prev_buf = buf;
+	}
+	if (buf) {
+		hailo15_buf_list_del(buf);
+	}
+	prev_buf = vid_node->prev_buf;
+	vid_node->prev_buf = NULL;
+	mutex_unlock(&vid_node->qlock);
+
+	if (prev_buf) {
+		if (vid_node->drop_prev_buf) {
+			/* Re-queue the stale frame to the driver queue; vb2_buffer_done(QUEUED)
+			 * would orphan it (no done_list, no buf_queue op) and leak one per toggle. */
+			mutex_lock(&vid_node->qlock);
+			hailo15_buf_list_add_tail(prev_buf, &vid_node->buf_queue);
+			mutex_unlock(&vid_node->qlock);
+			vid_node->drop_prev_buf = false;
+		} else {
+			prev_buf->vb.sequence = vid_node->sequence++;
+
+			if (vid_node->hdr_timestamp_mode == HDR_TIMESTAMP_MODE_OFF ||
+				hailo15_is_p2a_grp_id(vid_node->path) ||
+				hailo15_is_mcm_raw_wr_grp_id(vid_node->path)) {
+				prev_buf->vb.vb2_buf.timestamp = ktime_get_ns();
+			}
+
+			trace_vid_cap_buffer_dequeue(vid_node->path, prev_buf->vb.vb2_buf.index,
+							prev_buf->dma[0], prev_buf->vb.vb2_buf.timestamp);
+			vb2_buffer_done(&prev_buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+		}
+	}
+
+	/* In P2A flow, the first time this function is called, `buf` will be null, and the next value (stored in the shadow register)
+	 * is already the first element in the list. So the next buffer must be different than the first one (already there).
+	 * This means that first buffer in the list will remain a buffer to be skipped (as it represents buffer that is already being processed).
+	 *
+	 * Don't process the next buffer if streaming is stopped - this prevents issues when buffers are returned
+	 * during stream stop. */
+	if (vid_node->streaming) {
+		mutex_lock(&vid_node->qlock);
+		next_buffer = list_first_entry_or_null(
+			&vid_node->buf_queue, struct hailo15_buffer, irqlist);
+		if (vid_node->skip_first_list_entry) {
+			if (next_buffer && !list_empty(&vid_node->buf_queue) && !list_is_singular(&vid_node->buf_queue)) {
+				next_buffer = list_next_entry(next_buffer, irqlist);
+			} else {
+				next_buffer = NULL;
+			}
+		}
+		mutex_unlock(&vid_node->qlock);
+
+		if (next_buffer) {
+			/* This might cost us some calculations.       */
+			/* Consider moving the queue into the context  */
+			/* for more ops efficient method               */
+			if (hailo15_is_p2a_grp_id(vid_node->path)) {
+				vid_node->skip_first_list_entry = true;
+			}
+
+			hailo15_video_device_process_vb2_buffer(
+				&next_buffer->vb.vb2_buf, true);
+		} else {
+			vid_node->skip_first_list_entry = false;
+			hailo15_video_node_queue_empty(ctx, vid_node->path);
+		}
+	} else {
+		/* Stream is stopped, don't process next buffer */
+		vid_node->skip_first_list_entry = false;
+	}
+
+	if (hailo15_is_isp_grp_id(vid_node->path)) {
+		/* isp flow - we can't release the buffer yet. only in next frame */
+		mutex_lock(&vid_node->qlock);
+		vid_node->prev_buf = buf;
+		mutex_unlock(&vid_node->qlock);
+	}
+
+	return 0;
+}
+static int hailo15_buffer_prepare(struct vb2_buffer *vb)
+{
+	struct hailo15_video_node *vid_node = queue_to_node(vb->vb2_queue);
+	int plane, line_length, bytesperline;
+	struct v4l2_pix_format_mplane *mfmt = &vid_node->fmt.fmt.pix_mp;
+	const struct hailo15_video_fmt *format;
+
+	format = hailo15_fourcc_get_format(mfmt->pixelformat, mfmt->num_planes);
+
+	if (format == NULL) {
+		pr_err("%s - returning -EINVAL\n", __func__);
+		return -EINVAL;
+	}
+
+	/* maybe should validate addr alignment? */
+	for (plane = 0; plane < mfmt->num_planes; ++plane) {
+		line_length = ALIGN_UP(mfmt->width, STRIDE_ALIGN);
+		bytesperline = hailo15_plane_get_bytesperline(
+			format, line_length, plane);
+		vb2_set_plane_payload(
+			vb, plane,
+			hailo15_plane_get_sizeimage(format, mfmt->height,
+							bytesperline, plane));
+	}
+
+	return 0;
+}
+
+static int hailo15_video_node_start_streaming(struct vb2_queue *q, unsigned int count)
+{
+	struct hailo15_video_node *vid_node = queue_to_node(q);
+	int ret = -EINVAL;
+
+	if (WARN_ON(!vid_node))
+		return -EINVAL;
+
+	dev_dbg(vid_node->dev, "start streaming on node %d\n", vid_node->id);
+
+	/* Re-enable buffer queuing at stream start (defensive, should already be set by queue_setup) */
+	vid_node->queue_accepting_buffers = true;
+
+	if (!vid_node->streaming) {
+		ret = hailo15_video_node_subdev_set_stream(vid_node, STREAM_ON);
+		if (ret) {
+			dev_err(vid_node->dev,
+				"can't start stream on node %d with error %d\n",
+				vid_node->id, ret);
+			goto err;
+		}
+
+		vid_node->fast_toggle_state = FAST_TOGGLE_NONE;
+		vid_node->streaming = STREAM_ON;
+		wake_up_interruptible(&vid_node->stream_wait);
+	}
+
+	goto out;
+err:
+	hailo15_video_node_subdev_set_stream(vid_node, STREAM_OFF);
+	hailo15_video_node_queue_clean(vid_node, VB2_BUF_STATE_QUEUED);
+out:
+	return ret;
+}
+
+static void hailo15_video_node_stop_streaming(struct vb2_queue *q)
+{
+	struct hailo15_video_node *vid_node = queue_to_node(q);
+
+	if (WARN_ON(!vid_node))
+		return;
+
+	hailo15_video_node_stream_cancel(vid_node);
+
+}
+
+static struct vb2_ops hailo15_buffer_ops = {
+	.start_streaming = hailo15_video_node_start_streaming,
+	.stop_streaming = hailo15_video_node_stop_streaming,
+	.queue_setup = hailo15_queue_setup,
+	.buf_prepare = hailo15_buffer_prepare,
+	.buf_queue = hailo15_buffer_queue,
+	.wait_prepare = vb2_ops_wait_prepare,
+	.wait_finish = vb2_ops_wait_finish,
+};
+
+static void
+hailo15_video_node_video_device_unregister(struct hailo15_video_node *vid_node)
+{
+	video_unregister_device(vid_node->video_dev);
+}
+
+static void
+hailo15_video_node_queue_destroy(struct hailo15_video_node *vid_node)
+{
+	hailo15_video_node_queue_clean(vid_node, VB2_BUF_STATE_ERROR);
+}
+
+static void
+hailo15_video_node_destroy_media_entity(struct hailo15_video_node *vid_node)
+{
+	hailo15_media_entity_clean(&vid_node->video_dev->entity);
+}
+
+static void
+hailo15_video_node_video_device_destroy(struct hailo15_video_node *vid_node)
+{
+	hailo15_video_node_destroy_media_entity(vid_node);
+	mutex_destroy(&vid_node->ioctl_mutex);
+	video_device_release(vid_node->video_dev);
+}
+
+static void
+hailo15_video_node_destroy_v4l2_device(struct hailo15_video_node *vid_node)
+{
+	v4l2_device_unregister(vid_node->v4l2_dev);
+	kfree(vid_node->v4l2_dev);
+}
+
+static void
+hailo15_video_node_destroy_events(struct hailo15_video_node *vid_node)
+{
+	kfree(vid_node->event_resource.virt_addr);
+}
+
+static void hailo15_video_node_destroy(struct hailo15_video_node *vid_node)
+{
+	hailo15_video_node_video_device_unregister(vid_node);
+	hailo15_video_node_destroy_v4l2_device(vid_node);
+	hailo15_video_node_queue_destroy(vid_node);
+	hailo15_video_node_video_device_destroy(vid_node);
+	hailo15_video_node_destroy_events(vid_node);
+	if(vid_node->id == 0){
+		hailo15_media_clean_media_device();
+	}
+}
+
+static int hailo15_video_device_destroy(struct hailo15_vid_cap_device *vid_dev)
+{
+	int video_id;
+	for (video_id = 0; video_id < MAX_VIDEO_NODE_NUM; ++video_id) {
+		if (vid_dev->vid_nodes[video_id]) {
+			hailo15_video_node_destroy(
+				vid_dev->vid_nodes[video_id]);
+			kfree(vid_dev->vid_nodes[video_id]);
+		}
+	}
+
+	return 0;
+}
+
+
+static const struct media_entity_operations hailo15_video_media_ops = {
+	.link_validate = v4l2_subdev_link_validate,
+};
+
+static int hailo15_video_node_queue_init(struct hailo15_video_node *vid_node)
+{
+	int ret;
+
+	mutex_init(&vid_node->qlock);
+	INIT_LIST_HEAD(&vid_node->buf_queue);
+	mutex_init(&vid_node->buffer_mutex);
+
+	vid_node->queue.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+	vid_node->queue.drv_priv = vid_node;
+	vid_node->queue.ops = &hailo15_buffer_ops;
+	vid_node->queue.io_modes = VB2_MMAP | VB2_DMABUF;
+	vid_node->queue.mem_ops = &vb2_dma_contig_memops;
+	vid_node->queue.buf_struct_size = sizeof(struct hailo15_buffer);
+	vid_node->queue.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+	vid_node->queue.dev = vid_node->dev;
+	vid_node->queue.lock = &vid_node->buffer_mutex;
+	vid_node->queue.min_buffers_needed = MIN_BUFFERS_NEEDED;
+	ret = vb2_queue_init(&vid_node->queue);
+	if (ret) {
+		return ret;
+	}
+
+	vid_node->video_dev->queue = &vid_node->queue;
+
+	return 0;
+}
+
+static int
+hailo15_video_node_init_media_entity(struct hailo15_video_node *vid_node)
+{
+	if (WARN_ON(!vid_node->video_dev)) {
+		return -EINVAL;
+	}
+
+	vid_node->video_dev->entity.name = vid_node->video_dev->name;
+	vid_node->video_dev->entity.obj_type = MEDIA_ENTITY_TYPE_VIDEO_DEVICE;
+	vid_node->video_dev->entity.function = MEDIA_ENT_F_IO_V4L;
+	vid_node->video_dev->entity.ops = &hailo15_video_media_ops;
+
+	vid_node->pad.flags = MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_MUST_CONNECT;
+	return media_entity_pads_init(&vid_node->video_dev->entity, 1,
+					  &vid_node->pad);
+}
+
+static int
+hailo15_video_node_video_device_init(struct hailo15_video_node *vid_node)
+{
+	int ret;
+	struct device *dev;
+
+	if (WARN_ON(!vid_node->mdev)) {
+		return -EINVAL;
+	}
+
+	ret = 0;
+	dev = vid_node->mdev->dev;
+
+	vid_node->video_dev = video_device_alloc();
+
+	if (!vid_node->video_dev) {
+		dev_err(dev, "can't allocate video device for node %d\n",
+			vid_node->id);
+		return -ENOMEM;
+	}
+
+	mutex_init(&vid_node->ioctl_mutex);
+
+	sprintf(vid_node->video_dev->name, "hailo-vid-cap-%s", hailo15_grp_id_to_str(vid_node->path));
+	/*initialize video device*/
+	vid_node->video_dev->release =
+		video_device_release_empty; /* We will release the video device on our own */
+	vid_node->video_dev->fops = &video_ops;
+	vid_node->video_dev->ioctl_ops = &video_ioctl_ops;
+	vid_node->video_dev->minor = vid_node->id;
+	vid_node->video_dev->vfl_type = VFL_TYPE_VIDEO;
+	vid_node->video_dev->vfl_dir = VFL_DIR_RX;
+	vid_node->streaming = STREAM_OFF;
+	vid_node->queue_accepting_buffers = false; /* Will be set true in queue_setup */
+	vid_node->video_dev->device_caps =
+		V4L2_CAP_VIDEO_CAPTURE_MPLANE | V4L2_CAP_STREAMING | V4L2_CAP_EXT_PIX_FORMAT;
+
+	video_set_drvdata(vid_node->video_dev, vid_node);
+
+	ret = hailo15_video_node_init_media_entity(vid_node);
+	if (ret) {
+		dev_err(vid_node->dev, "cant init media entity for node %d\n",
+			vid_node->id);
+		goto err_media_entity;
+	}
+
+	goto out;
+
+err_media_entity:
+	mutex_destroy(&vid_node->ioctl_mutex);
+	video_device_release(vid_node->video_dev);
+out:
+	return ret;
+}
+
+static int
+hailo15_video_node_video_device_register(struct hailo15_video_node *vid_node)
+{
+	if (WARN_ON(!vid_node))
+		return -EINVAL;
+	return video_register_device(vid_node->video_dev, VFL_TYPE_VIDEO,
+					 vid_node->path);
+}
+
+static int
+hailo15_video_node_init_v4l2_device(struct hailo15_video_node *vid_node)
+{
+	int ret;
+
+	ret = 0;
+	if (WARN_ON(!vid_node->video_dev)) {
+		return -EINVAL;
+	}
+
+	vid_node->v4l2_dev = kzalloc(sizeof(struct v4l2_device), GFP_KERNEL);
+	if (WARN_ON(!vid_node->v4l2_dev)) {
+		return -ENOMEM;
+	}
+
+	ret = v4l2_device_register(vid_node->dev, vid_node->v4l2_dev);
+	if (WARN_ON(ret)) {
+		goto err_v4l2_device_register;
+	}
+
+	vid_node->video_dev->v4l2_dev = vid_node->v4l2_dev;
+	vid_node->v4l2_dev->mdev = vid_node->mdev;
+
+	ret = hailo15_media_register_v4l2_device(vid_node->v4l2_dev, vid_node->id);
+	if(ret){
+		pr_err("failed to register v4l2 device\n");
+		goto err_register_subdev_nodes;
+	}
+
+	ret = hailo15_media_register_video_subdev_nodes(vid_node->v4l2_dev);
+	if (ret) {
+		pr_err("%sFailed registering the subdevs with code %d \n",
+			   __func__, ret);
+		goto err_register_subdev_nodes;
+	}
+
+
+	goto out;
+
+err_register_subdev_nodes:
+	v4l2_device_unregister(vid_node->v4l2_dev);
+err_v4l2_device_register:
+	kfree(vid_node->v4l2_dev);
+out:
+	return ret;
+}
+
+static int hailo15_video_node_init_fmt(struct hailo15_video_node *vid_node)
+{
+	vid_node->fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	vid_node->fmt.fmt.pix.field = V4L2_FIELD_NONE;
+	vid_node->fmt.fmt.pix.colorspace = V4L2_COLORSPACE_REC709;
+
+	return 0;
+}
+
+static int hailo15_video_node_init_events(struct hailo15_video_node *vid_node)
+{
+	size_t size = HAILO15_EVENT_RESOURCE_DATA_SIZE + offsetof(struct hailo15_video_event_pkg, data);
+	size_t size_page_align = PAGE_ALIGN(size);
+
+	mutex_init(&vid_node->event_resource.event_lock);
+	init_waitqueue_head(&vid_node->event_resource.wait_q);
+	vid_node->event_resource.virt_addr =
+		kmalloc( size_page_align , GFP_KERNEL);
+	if (!vid_node->event_resource.virt_addr)
+		return -ENOMEM;
+
+	vid_node->event_resource.phy_addr =
+		virt_to_phys(vid_node->event_resource.virt_addr);
+
+	vid_node->event_resource.size = size;
+	memset(vid_node->event_resource.virt_addr, 0,
+		   vid_node->event_resource.size);
+
+	return 0;
+}
+
+static int hailo15_video_node_init(struct hailo15_video_node *vid_node)
+{
+	int ret;
+
+	if (!hailo15_media_device_initialized()) {
+		hailo15_media_init_media_device(vid_node->dev);
+	}
+
+	ret = hailo15_video_node_video_device_init(vid_node);
+	if (ret) {
+		dev_err(vid_node->dev, "can't init video device for node %d\n",
+			vid_node->id);
+		goto out;
+	}
+
+	ret = hailo15_video_node_queue_init(vid_node);
+	if (ret) {
+		dev_err(vid_node->dev,
+			"can't init video node queue for node %d\n",
+			vid_node->id);
+		goto err_queue_init;
+	}
+
+	ret = hailo15_video_node_init_fmt(vid_node);
+	if (ret) {
+		dev_err(vid_node->dev, "can't init fmt for node %d\n",
+			vid_node->id);
+		goto err_fmt;
+	}
+
+	ret = hailo15_video_node_init_v4l2_device(vid_node);
+	if (ret) {
+		dev_err(vid_node->dev, "can't init v4l2 device for node %d\n",
+			vid_node->id);
+		goto err_v4l2_device;
+	}
+
+	ret = hailo15_video_node_video_device_register(vid_node);
+	if (ret) {
+		dev_err(vid_node->dev,
+			"can't register video device for node %d\n",
+			vid_node->id);
+		goto err_video_register;
+	}
+
+	ret = hailo15_media_create_links(vid_node->dev, &vid_node->video_dev->entity, vid_node->id);
+	if(ret){
+		dev_err(vid_node->dev, "can't create media links for node %d\n", vid_node->id);
+		goto err_create_links;
+	}
+
+	ret = hailo15_video_node_init_events(vid_node);
+	if (ret) {
+		dev_err(vid_node->dev, "can't init events for node %d\n",
+			vid_node->id);
+		goto err_create_links;
+	}
+
+	init_waitqueue_head(&vid_node->stream_wait);
+
+	dev_dbg(vid_node->dev, "video node %d initialized successfully\n",
+		 vid_node->id);
+
+	goto out;
+
+err_create_links:
+	hailo15_video_node_video_device_unregister(vid_node);
+err_video_register:
+	hailo15_video_node_destroy_v4l2_device(vid_node);
+err_v4l2_device:
+err_fmt:
+	hailo15_video_node_queue_destroy(vid_node);
+err_queue_init:
+	hailo15_video_node_video_device_destroy(vid_node);
+out:
+	if (ret) {
+		hailo15_media_clean_media_device();
+	}
+	return ret;
+}
+
+static int hailo15_video_init_vid_nodes(struct hailo15_vid_cap_device *vid_dev)
+{
+	struct hailo15_video_node *vid_node = NULL;
+	struct fwnode_handle *ep = NULL;
+	struct v4l2_subdev* sd;
+	int i = 0;
+	uint32_t path;
+	int ret;
+	struct fwnode_endpoint fwnode_ep;
+	struct hailo15_dma_ctx* ctx;
+
+	while (i++ < MAX_VIDEO_NODE_NUM) {
+		ep = fwnode_graph_get_next_endpoint(dev_fwnode(vid_dev->dev),
+							ep);
+		if (!ep)
+			break;
+
+		// parse local and remote fwnodes of ep
+		memset(&fwnode_ep, 0, sizeof(struct fwnode_endpoint));
+
+		ret = fwnode_graph_parse_endpoint(ep, &fwnode_ep);
+		if (ret) {
+			pr_err("failed to parse endpoint %d, skipping...",
+				   i - 1);
+			fwnode_handle_put(ep);
+			continue;
+		}
+
+		VIDEO_INDEX_VALIDATE(fwnode_ep.port, ret = -EINVAL;
+					 goto err_invalid_port);
+
+		pr_info("initializing video endpoint port %d, id: %d\n",
+			fwnode_ep.port, fwnode_ep.id);
+
+		ret = hailo15_media_get_subdev(vid_dev->dev, fwnode_ep.port, &sd);
+		if (ret) {
+			pr_err("vid_node %d failed to get subdevice\n", fwnode_ep.port);
+			fwnode_handle_put(ep);
+			continue;
+		}
+
+		// initialize video node
+		vid_node =
+			kzalloc(sizeof(struct hailo15_video_node), GFP_KERNEL);
+		if (!vid_node) {
+			ret = -ENOMEM;
+			goto err_node_alloc;
+		}
+
+		vid_node->dev = vid_dev->dev;
+		vid_node->mdev = hailo15_media_get_media_device();
+
+		// node id taken from port property of the endpoint (assumes one endpoint per port)
+		vid_node->id = fwnode_ep.port;
+
+		vid_node->prev_buf = NULL;
+		vid_node->hdr_timestamp_mode = HDR_TIMESTAMP_MODE_OFF;
+
+		vid_node->fast_toggle_state = FAST_TOGGLE_NONE;
+		vid_node->fast_toggle_priming_buf = NULL;
+
+		// read path property so s_stream knows from where it was called
+		ret = fwnode_property_read_u32(ep, "path", &path);
+		if (ret || path >= HAILO15_VID_GRP_MAX) {
+			pr_err("failed to read path property from video node %d, skipping...\n",
+				   fwnode_ep.port);
+			kfree(vid_node);
+			continue;
+		}
+
+		vid_node->path = path;
+		ret = hailo15_video_node_init(vid_node);
+		if (ret) {
+			pr_err("failed to init video node %d, skipping...\n",
+				   fwnode_ep.port);
+			kfree(vid_node);
+			continue;
+		}
+
+		vid_dev->vid_nodes[vid_node->id] = vid_node;
+
+		ret = hailo15_media_get_subdev(vid_node->dev, vid_node->id, &sd);
+		if(ret){
+			pr_err("vid_node %d failed to get subdevice\n", vid_node->id);
+			goto err_node_alloc;
+		}
+
+		vid_node->direct_sd = sd;
+		ctx = v4l2_get_subdevdata(sd);
+		if (!ctx || !ctx->buf_ctx[vid_node->path].ops) {
+			pr_err("failed to get subdev data\n");
+			goto err_node_alloc;
+		}
+		ctx->buf_ctx[vid_node->path].ops->buffer_done = hailo15_video_device_buffer_done;
+		hailo15_video_node_set_private_data(ctx, vid_node->path,
+		                                           (void *)vid_node);
+
+		if (hailo15_is_p2a_grp_id(vid_node->path)) {
+			ctx->buf_ctx[vid_node->path].ops->buffer_dequeue = hailo15_video_device_buffer_dequeue;
+		}
+
+		pr_info("vid_node %d initialized successfully\n", vid_node->id);
+	}
+
+	ret = 0;
+
+	goto out;
+
+err_node_alloc:
+	for (i = 0; i < MAX_VIDEO_NODE_NUM; ++i) {
+		if (vid_dev->vid_nodes[i]) {
+			hailo15_video_node_destroy(vid_dev->vid_nodes[i]);
+			kfree(vid_dev->vid_nodes[i]);
+		}
+	}
+err_invalid_port:
+	fwnode_handle_put(ep);
+out:
+	return ret;
+}
+
+static int hailo15_video_probe(struct platform_device *pdev)
+{
+	int ret;
+	struct hailo15_vid_cap_device *vid_dev;
+
+	ret = hailo15_media_get_sink_endpoints_status(&pdev->dev);
+
+	if (ret) {
+		if (ret == -EPROBE_DEFER) {
+			pr_debug("cap endpoints deferred\n");
+		} else {
+			pr_err("cap endpoints not ready: %d!\n", ret);
+		}
+		return ret;
+	}
+
+	vid_dev = kzalloc(sizeof(struct hailo15_vid_cap_device), GFP_KERNEL);
+	if (!vid_dev) {
+		pr_err("failed to allocate vid cap device\n");
+		return -ENOMEM;
+	}
+
+	vid_dev->dev = &pdev->dev;
+
+	platform_set_drvdata(pdev, vid_dev);
+
+	ret = hailo15_video_init_vid_nodes(vid_dev);
+	if (ret) {
+		pr_err("failed to init video nodes");
+		goto err_init_nodes;
+	}
+
+	mutex_init(&sd_mutex);
+
+	pm_runtime_get_sync(&pdev->dev);
+	pm_runtime_set_active(&pdev->dev);
+	pm_runtime_enable(&pdev->dev);
+
+	dev_info(&pdev->dev, "Video device probe finished successfully");
+	goto out;
+err_init_nodes:
+	kfree(vid_dev);
+out:
+	return ret;
+}
+
+static int hailo15_video_remove(struct platform_device *pdev)
+{
+	struct hailo15_vid_cap_device *vid_dev;
+
+	pm_runtime_put_sync(&pdev->dev);
+	pm_runtime_set_suspended(&pdev->dev);
+	pm_runtime_disable(&pdev->dev);
+
+	mutex_destroy(&sd_mutex);
+	vid_dev = platform_get_drvdata(pdev);
+	hailo15_video_device_destroy(vid_dev);
+	kfree(vid_dev);
+	return 0;
+}
+
+static const struct of_device_id hailo15_vid_cap_of_match[] = {
+	{
+		.compatible = "hailo,vid-cap",
+	},
+	{ /* sentinel */ },
+};
+
+MODULE_DEVICE_TABLE(of, hailo15_vid_cap_of_match);
+
+static struct platform_driver hailo_video_driver = {
+	.probe = hailo15_video_probe,
+	.remove = hailo15_video_remove,
+	.driver = {
+		.name = HAILO_VID_NAME,
+		.of_match_table = hailo15_vid_cap_of_match,
+	},
+};
+
+module_platform_driver(hailo_video_driver);
+
+MODULE_DESCRIPTION("Hailo V4L2 video driver");
+MODULE_AUTHOR("Hailo SOC SW Team");
+MODULE_LICENSE("GPL v2");

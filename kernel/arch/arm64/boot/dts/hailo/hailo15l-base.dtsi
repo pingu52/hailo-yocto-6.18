@@ -1,0 +1,319 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2024 Hailo Technologies Ltd. All rights reserved.
+ */
+
+#define HAILO_SOC_TYPE HAILO_SOC_HAILO15L
+#include "hailo15l-audio.h"
+#include "hailo1x-base.dtsi"
+
+/ {
+    memory {
+        device_type = "memory";
+        reg = <0x00000000 0x80000000 0x00000000 0x80000000>;
+    };
+
+    soc:soc {
+        compatible = "hailo,hailo15l";
+    };
+
+    sram@60000000 {
+        cpu_scp_i2s_dma_shmem: scp-shmem@10a0 {
+            compatible = "hailo,hailo15-i2s-shmem";
+            reg = <0 0x10a0 0 0xf60>;
+        };
+    };
+
+    #include "hailo-ethernet.dtsi"
+    #include "hailo15-vision.dtsi"
+    #include "hailo15-dsp.dtsi"
+    #include "hailo15l-audio.dtsi"
+
+    pl320_mailbox: mailbox {
+        reg = <0 0x78003000 0 0x1000>;
+    };
+
+    pinctrl: pinctrl@7c291000 {
+        compatible = "hailo15l,pinctrl";
+        reg = <0 0x7c291000 0 0x1000>,
+                <0 0x7c292000 0 0x1000>,
+                <0 0x7c293000 0 0x1000>;
+        reg-names = "general_pads_config_base", "gpio_pads_config_base", "slow_pads_config_base";
+    };
+
+    vision_subsys: vision_subsys {
+        null-addr = <0x60C00000>;
+
+        csi2rx0: csi-bridge@7c011000 {
+            phys = <&dphy_rx>;
+            phy-names = "dphy";
+        };
+
+        csi2rx1: csi-bridge@7c015000 {
+            power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_CSI_RX0>;
+            phys = <&dphy_rx>;
+            phy-names = "dphy";
+        };
+
+        rxwrapper1: rxwrapper1@7c014000 {
+            power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_CSI_RX0>;
+        };
+
+        dphy_rx: dphy@7c013000 {
+            status = "ok";
+            reg = <0x0 0x7c013000 0x0 0x1000>;
+            compatible = "hailo,hailo15-dphy";
+            #phy-cells = <0>;
+        };
+
+        hailo_isp: isp@7C000000 {
+            compatible = "hailo,hailo15l-isp";
+        };
+
+        hailo_pixel_mux: hailo_pixel_mux@7C01C000 {
+            compatible = "hailo,hailo15l-pixel-mux";
+        };
+
+        rxwrapper0: rxwrapper0@7c010000 {
+            compatible = "hailo,hailo15l-rxwrapper";
+        };
+
+        rxwrapper1: rxwrapper1@7c014000 {
+            compatible = "hailo,hailo15l-rxwrapper";
+        };
+    };
+
+    spi_0: spi_0@0x00115000 {
+        status = "disabled";
+        compatible = "snps,dw-apb-ssi";
+        reg = <0 0x00115000 0 0x400>;
+        interrupts = <GIC_SPI HW_INTERRUPTS__SPI0_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        #address-cells = <1>;
+        #size-cells = <0>;
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SPI_0_GATE>;
+        clock-names = "spi_0_gate";
+        num-cs = <4>;
+    };
+    spi_1: spi_1@0x00115400 {
+        status = "disabled";
+        compatible = "snps,dw-apb-ssi";
+        reg = <0 0x00115400 0 0x400>;
+        interrupts = <GIC_SPI HW_INTERRUPTS__SPI1_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        #address-cells = <1>;
+        #size-cells = <0>;
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SPI_1_GATE>;
+        clock-names = "spi_1_gate";
+        num-cs = <2>;
+	};
+    spi_2: spi_2@0x00115800 {
+        status = "disabled";
+        compatible = "snps,dw-apb-ssi";
+        reg = <0 0x00115800 0 0x400>;
+        interrupts = <GIC_SPI HW_INTERRUPTS__SPI2_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        #address-cells = <1>;
+        #size-cells = <0>;
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SPI_2_GATE>;
+        clock-names = "spi_2_gate";
+        num-cs = <2>;
+	};
+    spi_3: spi_3@0x00115c00 {
+        status = "disabled";
+        compatible = "snps,dw-apb-ssi";
+        reg = <0 0x00115c00 0 0x400>;
+        interrupts = <GIC_SPI HW_INTERRUPTS__SPI3_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        #address-cells = <1>;
+        #size-cells = <0>;
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SPI_3_GATE>;
+        clock-names = "spi_3_gate";
+        num-cs = <1>;
+	};
+
+    xspi: xspi@1c0000 {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        compatible = "hailo,xspi-nor";
+        reg = <0x00000000 0x001c0000 0x00000000 0x2000>,
+                <0x00000000 0x70000000 0x00000000 0x08000000>,
+                <0x0 0x001c2000 0x0 0x1000>,
+                <0x0 0x0010f000 0x0 0x1000>;
+        reg-names = "io", "sdma", "aux", "wrapper";
+        interrupts = <GIC_SPI HW_INTERRUPTS__XSPI_IRQ IRQ_TYPE_LEVEL_HIGH>;
+
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>;
+
+        status = "okay";
+
+        spi0_flash0: flash@0 {
+            #address-cells = <1>;
+            #size-cells = <1>;
+            compatible = "jedec,spi-nor";
+            reg = <0>; /* chip select */
+        };
+
+        spi0_flash2: nand_flash@2 {
+            status = "disabled";
+            #address-cells = <1>;
+            #size-cells = <1>;
+            compatible = "spi-nand";
+            reg = <2>; /* chip select 2 - NAND flash */
+            spi-max-frequency = <50000000>;
+            spi-tx-bus-width = <4>;
+            spi-rx-bus-width = <4>;
+
+            partitions {
+                compatible = "fixed-partitions";
+                #address-cells = <1>;
+                #size-cells = <1>;
+
+                partition@0 {
+                    label = "bootloader";
+                    reg = <0x0 0x200000>; /* start=0MB, size=2MB */
+                };
+
+                partition@200000 {
+                    label = "fitImage";
+                    reg = <0x200000 0x1200000>; /* start=2MB, size=18MB */
+                };
+
+                partition@1400000 {
+                    label = "rootfs";
+                    reg = <0x1400000 0x1EC00000>; /* start=20MB, size=492MB (fills remaining 512MB NAND) */
+                };
+            };
+        };
+    };
+
+
+    i2c_0: i2c@104000 {
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_I2C_0>;
+    };
+
+    i2c_1: i2c@105000 {
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_I2C_1>;
+    };
+
+    i2c_2: i2c@106000 {
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_I2C_2>;
+    };
+
+    i2c_3: i2c@107000 {
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_I2C_3>;
+    };
+};
+
+&integrated_nnc {
+    compatible = "hailo,integrated-nnc,hailo15l";
+    vdma0: vdma@0 {
+        reg = <0x7c050000 0x800>, <0x7c052000 0x2000>;
+        reg-names = "channel-regs", "engine-regs";
+        interrupts = <GIC_SPI HW_INTERRUPTS__DRAM_DMA_AP0_INT_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "both";
+    };
+
+    vdma1: vdma@1 {
+        reg = <0x7c054000 0x800>, <0x7c056000 0x2000>;
+        reg-names = "channel-regs", "engine-regs";
+        interrupts = <GIC_SPI HW_INTERRUPTS__DRAM_DMA_AP1_INT_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "both";
+    };
+};
+
+&xrp {
+    status = "okay";
+    compatible = "hailo,hailo15l-dsp";
+    reg = <0 0x7c040000 0 0x2000>; // dsp config + dsp config axi
+    clock-frequency = <750000000>;
+};
+
+&xrp_reserved {
+    status = "okay";
+};
+
+&sdio0 {
+    compatible = "hailo,h15l-dwcmshc-sdhci-0";
+    clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_0_M_HCLK>,
+        <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_0_CLK_DIV_BYPASS>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_0_CARD_CLK>;
+    resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_SDIO_0_CD_FROM_PINMUX>;
+    clock-names = "core", "bus", "clk_div_bypass","card_clk";
+};
+
+&sdio1 {
+    compatible = "hailo,h15l-dwcmshc-sdhci-1";
+    resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_SDIO1_8BIT_MUX>, <&scmi_reset HAILO15_SCMI_RESET_IDX_SDIO_1_CD_FROM_PINMUX>;
+    reset-names = "sdio1-8bit-mux", "sdio-cd-input";
+};
+
+&gpio0 {
+    reg = <0 0x78200000 0 0x1000>,
+          <0 0x7c2a10e4 0 0xC>;
+};
+
+&gpio1 {
+    reg = <0 0x78201000 0 0x1000>,
+          <0 0x7c2a10e4 0 0xC>;
+};
+
+&edac {
+    reg = <0x0 0x7c060000 0x0 0x00002000>;
+};
+
+&nocpmu {
+    compatible = "hailo,hailo15l-noc-pmu";
+    reg = <0 0x000dc000 0 0x2100>;
+};
+
+&scu_log {
+    reg = <0 0x000df000 0 0x1000>;
+};
+
+&gp_vdma {
+    reg = <0 0x7c05A000 0 0x200>;
+    dma-channel@0 {
+        reg = <0x7c058000 0x20>;
+    };
+    dma-channel@1 {
+        reg = <0x7c058020 0x20>;
+    };
+    dma-channel@2 {
+        reg = <0x7c058040 0x20>;
+    };
+    dma-channel@3 {
+        reg = <0x7c058060 0x20>;
+    };
+    dma-channel@4 {
+        reg = <0x7c058080 0x20>;
+    };
+    dma-channel@5 {
+        reg = <0x7c0580A0 0x20>;
+    };
+    dma-channel@6 {
+        reg = <0x7c0580C0 0x20>;
+    };
+    dma-channel@7 {
+        reg = <0x7c0580E0 0x20>;
+    };
+    dma-channel@8 {
+        reg = <0x7c058100 0x20>;
+    };
+    dma-channel@9 {
+        reg = <0x7c058120 0x20>;
+    };
+    dma-channel@A {
+        reg = <0x7c058140 0x20>;
+    };
+    dma-channel@B {
+        reg = <0x7c058160 0x20>;
+    };
+    dma-channel@C {
+        reg = <0x7c058180 0x20>;
+    };
+    dma-channel@D {
+        reg = <0x7c0581A0 0x20>;
+    };
+    dma-channel@E {
+        reg = <0x7c0581C0 0x20>;
+    };
+    dma-channel@F {
+        reg = <0x7c0581E0 0x20>;
+    };
+};

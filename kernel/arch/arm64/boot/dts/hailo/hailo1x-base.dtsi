@@ -1,0 +1,658 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved.
+ */
+
+#include <dt-bindings/soc/hailo15_scmi_api.h>
+#include <dt-bindings/soc/hailo15_scu_fw_version.h>
+#include <dt-bindings/mailbox/pl320-mailbox.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/soc/hailo15_video_path.h>
+#include <dt-bindings/soc/hailo_interrupts.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/phy/phy.h>
+#include <dt-bindings/phy/phy-cadence.h>
+#include <dt-bindings/phy/phy-hailo-torrent.h>
+
+/* First 2MB are reserved memory for the platform (TrustedFirmware-A) */
+/memreserve/ 0x80000000 0x200000;
+/* reserved for u-boot / tfa boot logs and pcie boot communication page */
+/memreserve/ 0x802f0000 0x10000;
+
+/ {
+    model = "Hailo - Hailo15";
+    interrupt-parent = <&gic>;
+    #address-cells = <2>;
+    #size-cells = <2>;
+
+    cpus {
+        #address-cells = <2>;
+        #size-cells = <0>;
+
+        cpu_0: cpu@0 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a53", "arm,armv8";
+            reg = <0x0 0x0>;
+            clocks = <&scmi_dvfs HAILO15_SCMI_DVFS_DOMAIN_IDX_AP>;
+            enable-method = "psci";
+            next-level-cache = <&A53_L2>;
+            i-cache-size = <0x8000>;
+            i-cache-line-size = <64>;
+            i-cache-sets = <256>;
+            d-cache-size = <0x8000>;
+            d-cache-line-size = <64>;
+            d-cache-sets = <128>;
+        };
+
+        cpu_1: cpu@1 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a53", "arm,armv8";
+            reg = <0x0 0x1>;
+            clocks = <&scmi_dvfs HAILO15_SCMI_DVFS_DOMAIN_IDX_AP>;
+            enable-method = "psci";
+            next-level-cache = <&A53_L2>;
+            i-cache-size = <0x8000>;
+            i-cache-line-size = <64>;
+            i-cache-sets = <256>;
+            d-cache-size = <0x8000>;
+            d-cache-line-size = <64>;
+            d-cache-sets = <128>;
+        };
+
+        cpu_2: cpu@2 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a53", "arm,armv8";
+            reg = <0x0 0x2>;
+            clocks = <&scmi_dvfs HAILO15_SCMI_DVFS_DOMAIN_IDX_AP>;
+            enable-method = "psci";
+            next-level-cache = <&A53_L2>;
+            i-cache-size = <0x8000>;
+            i-cache-line-size = <64>;
+            i-cache-sets = <256>;
+            d-cache-size = <0x8000>;
+            d-cache-line-size = <64>;
+            d-cache-sets = <128>;
+        };
+
+        cpu_3: cpu@3 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a53", "arm,armv8";
+            reg = <0x0 0x3>;
+            clocks = <&scmi_dvfs HAILO15_SCMI_DVFS_DOMAIN_IDX_AP>;
+            enable-method = "psci";
+            next-level-cache = <&A53_L2>;
+            i-cache-size = <0x8000>;
+            i-cache-line-size = <64>;
+            i-cache-sets = <256>;
+            d-cache-size = <0x8000>;
+            d-cache-line-size = <64>;
+            d-cache-sets = <128>;
+        };
+
+        A53_L2: l2-cache {
+            compatible = "cache";
+            cache-size = <0x100000>;
+            cache-line-size = <64>;
+            cache-sets = <1024>;
+        };
+    };
+
+    psci {
+        compatible = "arm,psci-1.0";
+        method = "smc";
+    };
+
+    gic: interrupt-controller@60600000 {
+        compatible = "arm,gic-v3";
+        #interrupt-cells = <3>;
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+        interrupt-controller;
+        reg = <0x0 0x60600000 0x0 0x10000>, // GICD
+              <0x0 0x60680000 0x0 0x80000>, // GICR
+              <0x7 0x00000000 0x0 0x40000>; // GICC
+        interrupts = <GIC_PPI 9 IRQ_TYPE_LEVEL_HIGH>;
+
+        msi-controller@60620000 {
+            compatible = "arm,gic-v3-its";
+            msi-controller;
+            #msi-cells = <1>;
+            reg = <0 0x60620000 0 0x10000>;
+        };
+    };
+
+    edac: edac@7c060000 {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        compatible = "hailo15,cdns-mc-edac";
+        reg-names = "ddr-ctrl";
+        reg = <0x0 0x7c060000 0x0 0x00002000>;
+    };
+
+    timer {
+        compatible = "arm,armv8-timer";
+
+        interrupts = <GIC_PPI 13 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+                 <GIC_PPI 14 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+                 <GIC_PPI 11 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+                 <GIC_PPI 10 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>;
+        interrupt-names = "sec-phys", "phys", "virt", "hyp-phys";
+    };
+
+    gpio0: gpio@78200000 {
+        compatible = "arm,cmsdk-gpio";
+        gpio-controller;
+        #gpio-cells = <2>;
+        cmsdk_gpio,ngpio = <16>;
+        cmsdk_gpio,gpio-offset = <0>;
+        interrupt-controller;
+        #interrupt-cells = <2>;
+        interrupts = <GIC_SPI HW_INTERRUPTS__GPIO_IRQ IRQ_TYPE_LEVEL_HIGH>;
+    };
+
+    gpio1: gpio@78201000 {
+        compatible = "arm,cmsdk-gpio";
+        gpio-controller;
+        #gpio-cells = <2>;
+        cmsdk_gpio,ngpio = <16>;
+        cmsdk_gpio,gpio-offset = <16>;
+        interrupt-controller;
+        #interrupt-cells = <2>;
+        interrupts = <GIC_SPI HW_INTERRUPTS__GPIO_IRQ IRQ_TYPE_LEVEL_HIGH>;
+    };
+
+    pwm: pwm@112000 {
+        status = "disabled";
+        compatible = "hailo15,pwm";
+        reg = <0 0x112000 0 0x2000>;
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>;
+        clock-names = "hclk";
+        #pwm-cells = <2>;
+    };
+
+    sram@60000000 {
+        compatible = "mmio-sram";
+        reg = <0 0x60000000 0 0x4000>;
+
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges = <0x0 0x0 0x0 0x60000000 0x0 0x4000>;
+
+        cpu_scp_tx: scp-shmem@0 {
+            compatible = "arm,scmi-shmem";
+            reg = <0 0 0 0x1000>;
+        };
+        cpu_scp_rx: scp-shmem@1000 {
+            compatible = "arm,scmi-shmem";
+            reg = <0 0x1000 0 0xa0>;
+        };
+        cpu_nnm_ctrl_tx: scp-shmem@2000 {
+            compatible = "arm,scmi-shmem";
+            reg = <0 0x2000 0 0x640>;
+        };
+        cpu_nnm_ctrl_rx: scp-shmem@2640 {
+            compatible = "arm,scmi-shmem";
+            reg = <0 0x2640 0 0x640>;
+        };
+        cpu_nnm_evnt_rx: scp-shmem@2c80 {
+            compatible = "arm";
+            reg = <0 0x2c80 0 0x640>;
+        };
+    };
+
+    pl320_mailbox: mailbox {
+        #mbox-cells = <4>;
+        compatible = "arm,pl320-mailbox";
+        interrupts = <GIC_SPI HW_INTERRUPTS__ARM_MAILBOX_A53_INTR_0_IRQ IRQ_TYPE_LEVEL_HIGH>;
+
+        arm,dev-ch-idx = <0>;
+    };
+
+    hailo_torrent_phy: hailo-torrent-phy@200000 {
+        compatible = "hailo,torrent-phy";
+        reg = <0 0x200000 0 0x00020000>, <0 0x2a0000 0 0x60000>;
+        reg-names = "pcie-config", "usb-config";
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_USB_PCLK>,
+                 <&scmi_clk HAILO15_SCMI_CLOCK_IDX_PCIE_PCLK>,
+                 <&scmi_clk HAILO15_SCMI_CLOCK_IDX_PCIE_ACLK>;
+        clock-names = "usb_pclk", "pcie_pclk", "pcie_aclk";
+        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE>,
+                 <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_APB>;
+        reset-names = "pcie", "pcie_apb";
+        power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_PCIE>;
+        status = "disabled";
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        cdns_torrent_phy: cdns-torrent-phy@240000 {
+            compatible = "cdns,torrent-phy";
+            reg = <0x0 0x240000 0x0 0x40000>;
+            reg-names = "torrent_phy";
+            resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY>;
+            reset-names = "torrent_reset";
+            clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_PCIE_REFCLK>;
+            clock-names = "refclk";
+            #address-cells = <1>;
+            #size-cells = <0>;
+        };
+    };
+
+    hailo_usb3: hailo-usb3@2a0000 {
+        compatible = "hailo,usb3";
+        reg = <0 0x2a0000 0 0x60000>;
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_USB_PCLK>,
+                 <&scmi_clk HAILO15_SCMI_CLOCK_IDX_USB_LPM_CLK>,
+                 <&scmi_clk HAILO15_SCMI_CLOCK_IDX_USB2_REFCLK>,
+                 <&scmi_clk HAILO15_SCMI_CLOCK_IDX_USB_ACLK>,
+                 <&scmi_clk HAILO15_SCMI_CLOCK_IDX_USB_SOF_CLK>;
+        clock-names = "usb_pclk", "usb_lpm_clk", "usb2_refclk", "usb_aclk", "usb_sof_clk";
+        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_USB>, <&scmi_reset HAILO15_SCMI_RESET_IDX_USB_APB>;
+        reset-names = "usb", "usb_apb";
+        power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_USB>;
+        interrupts = <GIC_SPI HW_INTERRUPTS__USB_INFO_INTR_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "usb_info_intr";
+        interrupt-controller;
+        #interrupt-cells = <1>;
+        status = "disabled";
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        cdns_usb3: cdns-usb3@280000 {
+            compatible = "cdnsp,usb3";
+            #address-cells = <2>;
+            #size-cells = <2>;
+            reg =   <0x00 0x280000 0x00 0x4000>,
+                    <0x00 0x288000 0x00 0x4000>,
+                    <0x00 0x284000 0x00 0x4000>;
+            reg-names = "otg", "xhci", "dev";
+            interrupt-parent = <&hailo_usb3>;
+            interrupts = <0>, <1>, <2>;  /* Virtual sub-interrupts */
+            interrupt-names = "host", "peripheral", "otg";
+            maximum-speed = "super-speed-plus";
+        };
+    };
+
+    serial0: uart0@108000 {
+        status = "disabled";
+        compatible = "snps,dw-apb-uart";
+        reg = <0 0x00108000 0 0x1000>;
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>;
+        clock-names = "hclk";
+        interrupts = <GIC_SPI HW_INTERRUPTS__UART0_IRQ_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        reg-shift = <2>;
+        reg-io-width = <1>;
+    };
+
+    serial1: uart1@109000 {
+        compatible = "snps,dw-apb-uart";
+        reg = <0 0x00109000 0 0x1000>;
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>;
+        clock-names = "hclk";
+        interrupts = <GIC_SPI HW_INTERRUPTS__UART1_IRQ_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        reg-shift = <2>;
+        reg-io-width = <1>;
+    };
+
+
+    serial2: uart2@10a000 {
+        status = "disabled";
+        compatible = "snps,dw-apb-uart";
+        reg = <0 0x0010a000 0 0x1000>;
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>;
+        clock-names = "hclk";
+        interrupts = <GIC_SPI HW_INTERRUPTS__UART2_IRQ_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        reg-shift = <2>;
+        reg-io-width = <1>;
+    };
+
+    serial3: uart3@10b000 {
+        status = "disabled";
+        compatible = "snps,dw-apb-uart";
+        reg = <0 0x0010b000 0 0x1000>;
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>;
+        clock-names = "hclk";
+        interrupts = <GIC_SPI HW_INTERRUPTS__UART3_IRQ_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        reg-shift = <2>;
+        reg-io-width = <1>;
+    };
+
+    i2c_0: i2c@104000 {
+        status = "disabled";
+        compatible = "snps,designware-i2c";
+        reg = <0 0x104000 0 0x1000>;
+        interrupts = <GIC_SPI HW_INTERRUPTS__I2C0_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        clock-frequency = <100000>;
+        clock-names = "hclk";
+        #address-cells = <1>;
+        #size-cells = <0>;
+    };
+
+    i2c_1: i2c@105000 {
+        status = "disabled";
+        compatible = "snps,designware-i2c";
+        reg = <0 0x105000 0 0x1000>;
+        interrupts = <GIC_SPI HW_INTERRUPTS__I2C1_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        clock-frequency = <100000>;
+        clock-names = "hclk";
+        #address-cells = <1>;
+        #size-cells = <0>;
+    };
+
+    i2c_2: i2c@106000 {
+        status = "disabled";
+        compatible = "snps,designware-i2c";
+        reg = <0 0x106000 0 0x1000>;
+        interrupts = <GIC_SPI HW_INTERRUPTS__I2C2_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        clock-names = "hclk";
+        #address-cells = <1>;
+        #size-cells = <0>;
+    };
+
+    i2c_3: i2c@107000 {
+        status = "disabled";
+        compatible = "snps,designware-i2c";
+        reg = <0 0x107000 0 0x1000>;
+        interrupts = <GIC_SPI HW_INTERRUPTS__I2C3_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        clock-frequency = <100000>;
+        clock-names = "hclk";
+        #address-cells = <1>;
+        #size-cells = <0>;
+    };
+
+    reserved_memory: reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        /* ******* DDR 1'st GiB ******* */
+        /* Hailo nn-core firmware: static reserve 4MiB area: [0x80500000 - 0x80900000)
+           - must be at 0x8XXXXXXX for main2fast LUT to work (accessing 0x3XXXXXXX->0x8XXXXXXX in the NNM firmware) */
+        hailo_nnc_fw_cma: hailo_nnc_fw_cma@0 {
+            reg = <0 0x80500000 0 0x400000>;
+            no-map;
+        };
+        // XRP(DSP): static reserve 2MiB for DSP Firmware code: [0x80300000 - 0x80500000).
+        xrp_reserved: xrp@0 {
+            status = "disabled";
+            reg = <0 0x80300000 0 0x200000>;
+        };
+        // Media buffer: reserve 896 Mib: [0x88000000 - 0xC0000000)
+        hailo_media_buf_cma: hailo_media_buf,cma {
+            compatible = "shared-dma-pool";
+            reusable;
+            linux,cma-hailo;
+            reg = <0 0x88000000 0 0x38000000>;
+        };
+
+        // SDIO-0: static reserve 64MiB for DMA bounce buffer: [0xC8000000 - 0xCC000000).
+        sdio0_reserved: buffer@0 {
+            status = "disabled";
+            compatible = "restricted-dma-pool";
+            reg = <0 0xC8000000 0 0x4000000>;
+        };
+        // default Linux,CMA: reserve 512 Mib: [0xCC000000 - 0xEC000000)
+        cma: linux,cma {
+            compatible = "shared-dma-pool";
+            reusable;
+            linux,cma-default;
+            reg = <0 0xCC000000 0 0x20000000>;
+        };
+        // Log messages and errors to RAM: reserve 960 KiB: [0x80200000 - 0x802f0000)
+        ramoops: ramoops@85F00000 {
+            compatible = "ramoops";
+            reg = <0 0x80200000 0 0x000f0000>;
+            record-size = <0x00040000>;       /* 256 KB per record */
+            console-size = <0x00040000>;      /* 256 KB for printk logs */
+            ftrace-size = <0x00020000>;       /* 128 KB for ftrace */
+            pmsg-size = <0x00010000>;         /* 128 KB for pmsg */
+            max-reason = <3>;                 /* KMSG_DUMP_EMERG */
+            no-map;
+        };
+    };
+
+    main-bus {
+        compatible = "simple-bus";
+        ranges;
+        #address-cells = <2>;
+        #size-cells = <2>;
+        // From main-bus prespective the 256MiB range from bus-address:
+        // 0x40000000 to 0x50000000, is mapped to physical address 0xC0000000-0xD0000000
+        // 0x50000000 to 0x60000000, is mapped to physical address 0x80000000-0x90000000
+        dma-ranges = <0 0x40000000 0 0xC0000000 0 0x10000000>,
+                     <0 0x50000000 0 0x80000000 0 0x10000000>;
+
+        watchdog@7c2c1000 {
+            compatible = "arm,sp805", "arm,primecell";
+            reg = <0 0x7c2c1000 0 0x1000>;
+                    clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>;
+            clock-names = "wdog_clk", "apb_pclk";
+                    timeout-sec = <10>;
+        };
+
+        sdio0: sdio0@78000000 {
+            status = "disabled";
+            reg = <0 0x78000000 0 0x1000>;
+            interrupts = <GIC_SPI HW_INTERRUPTS__SDIO0_IRQ IRQ_TYPE_LEVEL_HIGH>;
+            sdhci-caps= <0 0x01000000>; // Force VOLT33 capability
+            cap-mmc-hw-reset;
+            disable-wp;
+            memory-region = <&sdio0_reserved>;
+            reset-names = "sdio-cd-input";
+            bus-width = <4>;
+        };
+
+        nocpmu: nocpmu {
+            reg-names = "noc_pmu_samples";
+        };
+    };
+
+    sdio1: sdio1@78001000 {
+        status = "disabled";
+        reg = <0 0x78001000 0 0x1000>;
+        interrupts = <GIC_SPI HW_INTERRUPTS__SDIO1_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_1_M_HCLK>,
+        <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_1_CLK_DIV_BYPASS>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_1_CARD_CLK>;
+        clock-names = "core", "bus", "clk_div_bypass", "card_clk";
+        cap-mmc-hw-reset;
+        disable-wp;
+    };
+
+    thermal-zones {
+        pvt_ts_0: pvt-ts-0 {
+            polling-delay-passive = <0>;
+            polling-delay = <0>;
+            thermal-sensors = <&scmi_temp_sensor HAILO15_SCMI_SENSOR_IDX_PVT_TEMPERATURE_SENSOR_0>;
+            trips {
+                pvt_ts_0_trip_point_0: pvt-ts-0-trip-point-0 {
+                         temperature = <105000>;
+                         hysteresis = <14999>;
+                         type = "passive";
+                };
+                pvt_ts_0_trip_point_1: pvt-ts-0-trip-point-1 {
+                        temperature = <109000>;
+                        hysteresis = <1999>;
+                        type = "passive";
+                };
+                pvt_ts_0_trip_point_2: pvt-ts-0-trip-point-2 {
+                        temperature = <113000>;
+                        hysteresis = <1999>;
+                        type = "passive";
+                };
+                pvt_ts_0_trip_point_3: pvt-ts-0-trip-point-3 {
+                        temperature = <117000>;
+                        hysteresis = <1999>;
+                        type = "passive";
+                };
+                pvt_ts_0_trip_point_4: pvt-ts-0-trip-point-4 {
+                        temperature = <119000>;
+                        hysteresis = <2999>;
+                        type = "passive";
+                };
+                pvt_ts_0_trip_point_crit: pvt-ts-0-trip-point-critical {
+                         temperature = <122000>;
+                         hysteresis = <4000>;
+                         type = "critical";
+                };
+            };
+        };
+        pvt_ts_1: pvt-ts-1 {
+            polling-delay-passive = <0>;
+            polling-delay = <0>;
+            thermal-sensors = <&scmi_temp_sensor HAILO15_SCMI_SENSOR_IDX_PVT_TEMPERATURE_SENSOR_1>;
+            trips {
+                pvt_ts_1_trip_point_0: pvt-ts-1-trip-point-0 {
+                         temperature = <105000>;
+                         hysteresis = <14999>;
+                         type = "passive";
+                };
+                pvt_ts_1_trip_point_1: pvt-ts-1-trip-point-1 {
+                        temperature = <109000>;
+                        hysteresis = <1999>;
+                        type = "passive";
+                };
+                pvt_ts_1_trip_point_2: pvt-ts-1-trip-point-2 {
+                        temperature = <113000>;
+                        hysteresis = <1999>;
+                        type = "passive";
+                };
+                pvt_ts_1_trip_point_3: pvt-ts-1-trip-point-3 {
+                        temperature = <117000>;
+                        hysteresis = <1999>;
+                        type = "passive";
+                };
+                pvt_ts_1_trip_point_4: pvt-ts-1-trip-point-4 {
+                        temperature = <119000>;
+                        hysteresis = <2999>;
+                        type = "passive";
+                };
+                pvt_ts_1_trip_point_crit: pvt-ts-1-trip-point-critical {
+                         temperature = <122000>;
+                         hysteresis = <4000>;
+                         type = "critical";
+                };
+            };
+        };
+    };
+
+    firmware {
+        scmi {
+            compatible = "arm,scmi";
+            mboxes = <&pl320_mailbox 6 1 0 PL320_MBOX_TXDONE_BY_ACK>, <&pl320_mailbox 6 9 8 PL320_MBOX_TXDONE_BY_ACK>;
+            mbox-names = "tx", "rx";
+            shmem = <&cpu_scp_tx>, <&cpu_scp_rx>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            fw-ver = <SCU_FW_SCMI_VERSION>;
+
+            scmi_devpd: protocol@11 {
+                reg = <0x11>;
+                #power-domain-cells = <1>;
+            };
+            scmi_dvfs: protocol@13 {
+                reg = <0x13>;
+                #clock-cells = <1>;
+            };
+            scmi_clk: protocol@14 {
+                reg = <0x14>;
+                #clock-cells = <1>;
+            };
+            scmi_temp_sensor: protocol@15 {
+                reg = <0x15>;
+                #thermal-sensor-cells = <1>;
+            };
+            scmi_reset: protocol@16 {
+                reg = <0x16>;
+                #reset-cells = <1>;
+            };
+            scmi_hailo: protocol@81 {
+                reg = <0x81>;
+                #hailo-cells = <1>;
+            };
+        };
+    };
+
+    scu_log: scu_log {
+        compatible = "hailo,scu-log";
+    };
+
+    integrated_nnc: integrated_nnc {
+        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_CORE_CPU>,
+                 <&scmi_reset HAILO15_SCMI_RESET_IDX_NN_CORE>;
+        reset-names = "core-cpu", "nn-core";
+        mboxes = <&pl320_mailbox 7 3 2 PL320_MBOX_TXDONE_BY_IRQ>,
+                 <&pl320_mailbox 7 7 6 PL320_MBOX_TXDONE_BY_IRQ>,
+                 <&pl320_mailbox 7 11 10 PL320_MBOX_TXDONE_BY_IRQ>;
+        mboxes-names = "nnc-control", "nnc-d2h-events", "nnc-driver-down-event";
+        shmem = <&cpu_nnm_ctrl_tx &cpu_nnm_ctrl_rx>, <&cpu_nnm_evnt_rx>;
+        shmem-names = "control-tx", "control-rx", "event-rx";
+
+        memory-region = <&hailo_nnc_fw_cma>;
+        memory-region-names = "nnc-fw-cma";
+
+        reg = <0 0x5c000 0 0x14000>, <0 0x80000 0 0x240>, <0 0x80240 0 0x2ddc0>, <0 0x000af000 0 0x1000>;
+        reg-names = "core-fw-code", "core-fw-isr-vector", "core-fw-data", "core-fw-log";
+
+        ranges;
+        #address-cells = <1>;
+        #size-cells = <1>;
+    };
+
+    hailo_pci_ep_driver: hailo_pci_ep_driver {
+        status = "disabled";
+
+        reg = <0 0x00222000 0 0x1e000>, <0 0x00200000 0 0x20000>, <0 0x00220000 0 0x2000>;
+        reg-names = "channel-regs", "config-regs", "bridge-regs";
+        interrupts = <GIC_SPI HW_INTERRUPTS__PCIE_FUNC_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_PCIE>;
+    };
+
+    gp_vdma: gp_vdma {
+    #address-cells = <1>;
+    #size-cells = <1>;
+    compatible = "hailo,hailo15-gp_vdma";
+    ranges;
+        interrupts = <GIC_SPI HW_INTERRUPTS__SW_DMA_AP_INT_0_IRQ IRQ_TYPE_LEVEL_HIGH>,
+                    <GIC_SPI HW_INTERRUPTS__SW_DMA_AP_INT_1_IRQ IRQ_TYPE_LEVEL_HIGH>,
+                    <GIC_SPI HW_INTERRUPTS__SW_DMA_AP_INT_2_IRQ IRQ_TYPE_LEVEL_HIGH>,
+                    <GIC_SPI HW_INTERRUPTS__SW_DMA_AP_INT_3_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "gp_dma_irq_0", "gp_dma_irq_1", "gp_dma_irq_2", "gp_dma_irq_3";
+    };
+
+    regulator_3p3v: regulator-3p3v {
+        compatible = "regulator-fixed";
+        regulator-name = "regulator_3p3v";
+        regulator-min-microvolt = <3300000>;
+        regulator-max-microvolt = <3300000>;
+        regulator-always-on;
+    };
+
+    regulator_1p8v: regulator-1p8v {
+        compatible = "regulator-fixed";
+        regulator-name = "regulator_1p8v";
+        regulator-min-microvolt = <1800000>;
+        regulator-max-microvolt = <1800000>;
+        regulator-always-on;
+    };
+
+    pmu {
+        compatible = "arm,cortex-a53-pmu";
+        interrupts = <GIC_PPI 7 IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-parent = <&gic>;
+    };
+
+    chosen {
+        stdout-path = &serial1;
+     };
+
+    aliases {
+        mmc0 = &sdio0;
+        mmc1 = &sdio1;
+        serial0 = &serial0;
+        serial1 = &serial1;
+        serial2 = &serial2;
+        serial3 = &serial3;
+    };
+};

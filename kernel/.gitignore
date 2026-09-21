@@ -1,0 +1,19 @@
+# build artifacts only
+vmlinux
+vmlinux-*
+*.o
+*.o.d
+*.ko
+*.mod
+*.mod.c
+*.cmd
+*.symtypes
+Module.symvers
+modules.order
+modules.builtin*
+scripts/.tmp_*
+include/config/
+include/generated/
+.*.d
+.tmp_*
+*.dtb
