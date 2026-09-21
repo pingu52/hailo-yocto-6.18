@@ -454,8 +454,9 @@ static int hailo15_evb_cpld_apply_overlay(struct hailo15_evb_cpld *cpld,
         dtb = &hailo15_evb_cpld_of_overlays[type_id];
 
         cpld->ovcs_id = 0;
+        /* 6.18: of_overlay_fdt_apply() gained a target_base arg */
         return of_overlay_fdt_apply(dtb->begin, dtb->end - dtb->begin,
-                                    &cpld->ovcs_id);
+                                    &cpld->ovcs_id, NULL);
 }
 
 /* -----------------------------------------------------------------------------
@@ -488,8 +489,8 @@ EXPORT_SYMBOL_GPL(hailo15_evb_cpld_set_gpio_direction);
  * I2C Driver
  */
 
-static int hailo15_evb_cpld_probe(struct i2c_client *client,
-                                  const struct i2c_device_id *id)
+/* 6.18: i2c probe no longer receives i2c_device_id */
+static int hailo15_evb_cpld_probe(struct i2c_client *client)
 {
         struct device *dev = &client->dev;
         struct hailo15_evb_cpld *cpld;
@@ -545,13 +546,13 @@ static int hailo15_evb_cpld_probe(struct i2c_client *client,
         return 0;
 }
 
-static int hailo15_evb_cpld_remove(struct i2c_client *client)
+/* 6.18: i2c remove is void */
+static void hailo15_evb_cpld_remove(struct i2c_client *client)
 {
-        struct hailo15_evb_cpld *cpld = i2c_get_clientdata(client);
+	struct hailo15_evb_cpld *cpld = i2c_get_clientdata(client);
 
-        debugfs_remove_recursive(cpld->debugfs_dir);
-        of_overlay_remove(&cpld->ovcs_id);
-        return 0;
+	debugfs_remove_recursive(cpld->debugfs_dir);
+	of_overlay_remove(&cpld->ovcs_id);
 }
 
 static const struct of_device_id hailo15_evb_cpld_of_match[] = {
