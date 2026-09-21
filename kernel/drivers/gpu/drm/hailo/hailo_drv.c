@@ -7,8 +7,9 @@
 #include <drm/drm_vblank.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_atomic_helper.h>
-#include <drm/drm_fb_cma_helper.h>
-#include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_fb_dma_helper.h>  /* 6.18: CMA->DMA helper rename */
+#include <drm/drm_fbdev_dma.h>  /* 6.18: DRM_FBDEV_DMA_DRIVER_OPS */
+#include <drm/drm_gem_dma_helper.h>  /* 6.18: CMA->DMA helper rename */
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
@@ -78,15 +79,16 @@ struct hailo_driver_device {
 	struct drm_simple_display_pipe pipe;
 };
 
-DEFINE_DRM_GEM_CMA_FOPS(fops);
+DEFINE_DRM_GEM_DMA_FOPS(fops);
 
 static const struct drm_driver driver_drm_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops = &fops,
-	DRM_GEM_CMA_DRIVER_OPS,
+	DRM_GEM_DMA_DRIVER_OPS,  /* 6.18: CMA->DMA */
+	DRM_FBDEV_DMA_DRIVER_OPS, /* 6.18: replaces drm_fbdev_generic_setup() */
 	.name = "hailo-drm",
 	.desc = "HAILO DRM",
-	.date = "20240319",
+	/* 6.18: .date removed from struct drm_driver */
 	.major = 1,
 	.minor = 0,
 };
@@ -165,7 +167,7 @@ static void hailo_pipe_update(struct drm_simple_display_pipe *pipe,
 {
 	struct drm_plane_state *new_state = pipe->plane.state;
 	struct drm_framebuffer *fb = new_state->fb;
-	struct drm_gem_cma_object *cma_obj;
+	struct drm_gem_dma_object *dma_obj;
 	dma_addr_t dma_addr;
 	struct drm_crtc *crtc = &pipe->crtc;
 	struct drm_device *drm = crtc->dev;
@@ -175,11 +177,13 @@ static void hailo_pipe_update(struct drm_simple_display_pipe *pipe,
 		return;
 	}
 
-	cma_obj = drm_fb_cma_get_gem_obj(fb, 0);
-	if (!cma_obj)
+	/* 6.18: drm_gem_cma_object/drm_fb_cma_get_gem_obj/_paddr removed;
+	 * GEM CMA merged into GEM DMA (drm_gem_dma_object / dma_addr). */
+	dma_obj = drm_fb_dma_get_gem_obj(fb, 0);
+	if (!dma_obj)
 		return;
 
-	dma_addr = cma_obj->paddr;
+	dma_addr = dma_obj->dma_addr;
 
 	writel(CFG_PLANE_0_PHYSICAL_BASE_ADD_NEXT(dma_addr),
 	       priv->regs + PLANE_0_PHYSICAL_BASE_ADD_NEXT_EXT_DATA_OUT);
@@ -295,7 +299,8 @@ static int driver_probe(struct platform_device *pdev)
 		goto err_disable_clks;
 	}
 
-	drm_fbdev_generic_setup(drm, SUPPORTED_BYTES_PER_PIXEL * 8);
+	/* 6.18: fbdev emulation now auto-installs via
+	 * DRM_FBDEV_DMA_DRIVER_OPS in the drm_driver above. */
 
 	return 0;
 
@@ -307,16 +312,15 @@ err_disable_dsi_sys_clk:
 }
 
 // This function is called before the devm_ resources are released
-static int driver_remove(struct platform_device *pdev)
+/* 6.18: platform_driver.remove is void */
+static void driver_remove(struct platform_device *pdev)
 {
-	struct drm_device *drm = platform_get_drvdata(pdev);
-	drm_dev_unregister(drm);
-	drm_atomic_helper_shutdown(drm);
-	pm_runtime_put_sync(&pdev->dev);
-	pm_runtime_set_suspended(&pdev->dev);
-	pm_runtime_disable(&pdev->dev);
-
-	return 0;
+struct drm_device *drm = platform_get_drvdata(pdev);
+drm_dev_unregister(drm);
+drm_atomic_helper_shutdown(drm);
+pm_runtime_put_sync(&pdev->dev);
+pm_runtime_set_suspended(&pdev->dev);
+pm_runtime_disable(&pdev->dev);
 }
 
 // This function is called on kernel restart and shutdown
