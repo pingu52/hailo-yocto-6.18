@@ -1121,24 +1121,21 @@ static int hailo_pmu_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int hailo_pmu_remove(struct platform_device *pdev)
+/* 6.18: platform_driver.remove is void */
+static void hailo_pmu_remove(struct platform_device *pdev)
 {
 	struct hailo_pmu *hailo_pmu = platform_get_drvdata(pdev);
 	int ret;
 
 	ret = hailo_pmu_unregister_notifiers(hailo_pmu);
-	if (ret) {
+	if (ret)
 		pr_err("Failed to unregister notifiers: %d\n", ret);
-		return ret;
-	}
 
 	flush_workqueue(hailo_pmu->scmi_wq);
 	destroy_workqueue(hailo_pmu->scmi_wq);
 
 	/* Unregister the Hailo PMU */
 	perf_pmu_unregister(&hailo_pmu->pmu);
-
-	return 0;
 }
 
 static const struct of_device_id hailo_noc_pmu_dt_ids[] = {

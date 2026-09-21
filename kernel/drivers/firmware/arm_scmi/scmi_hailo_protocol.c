@@ -2,6 +2,7 @@
 #include <linux/scmi_protocol.h>
 #include <dt-bindings/soc/hailo15_scu_fw_version.h>
 #include "common.h"
+#include "protocols.h"
 
 static int scmi_hailo_xfer(const struct scmi_protocol_handle *ph, unsigned int cmd_id, const void *request_buffer, size_t request_size, void *response_buffer, size_t response_size)
 {
