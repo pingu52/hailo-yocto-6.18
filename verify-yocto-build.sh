@@ -95,6 +95,29 @@ for m in usb_f_hailo_rfs_load.ko usb_f_hailo_swu_load.ko; do
   [ -f "$KERNEL_TREE/drivers/usb/gadget/function/$m" ]; check "$m" $?
 done
 
+log "=== 7. core-image-minimal rootfs (ext4 + tar.zst + manifest) ==="
+# wrynose deploy 네이밍 (실측): core-image-minimal-<machine>.rootfs-<ts>.{ext4,tar.zst,manifest}
+EXT4=$(ls "$DEPLOY"/core-image-minimal*.rootfs-*.ext4 2>/dev/null | head -1)
+TARZ=$(ls "$DEPLOY"/core-image-minimal*.rootfs-*.tar.zst 2>/dev/null | head -1)
+MANI=$(ls "$DEPLOY"/core-image-minimal*.rootfs-*.manifest 2>/dev/null | head -1)
+if [ -n "$EXT4" ]; then
+  log "ext4: $(basename "$EXT4")"
+  file -b "$EXT4" | tee "$ART/ext4-file.txt"
+  tune2fs -l "$EXT4" 2>/dev/null | grep -E "^Filesystem state" | tee "$ART/ext4-state.txt"
+  grep -q "state: *clean" "$ART/ext4-state.txt"; check "ext4 filesystem state=clean" $?
+  MANIFEST_PKGS=$(wc -l < "$MANI" 2>/dev/null)
+  log "manifest 패키지 ${MANIFEST_PKGS}개"
+  [ -n "$MANIFEST_PKGS" ] && [ "$MANIFEST_PKGS" -gt 50 ]; check "manifest 패키지 50개 이상 (${MANIFEST_PKGS})" $?
+  debugfs -R "ls /" "$EXT4" 2>/dev/null > "$ART/ext4-root-listing.txt"
+  grep -q "bin" "$ART/ext4-root-listing.txt" && grep -q "usr" "$ART/ext4-root-listing.txt" \
+    && grep -q "etc" "$ART/ext4-root-listing.txt"; check "rootfs 루트 구조 (bin/usr/etc)" $?
+else
+  log "ext4 이미지 실재 안 함 (bitbake core-image-minimal 실행 필요)"
+  check "core-image-minimal ext4 산출물" 1
+fi
+[ -n "$TARZ" ] && [ -f "$TARZ" ]; check "tar.zst 루트fs 아카이브" $?
+[ -n "$MANI" ] && [ -f "$MANI" ]; check "manifest" $?
+
 log "=== 완료: PASS=$PASS FAIL=$FAIL ==="
 echo "ART=$ART"
 [ "$FAIL" -eq 0 ]
