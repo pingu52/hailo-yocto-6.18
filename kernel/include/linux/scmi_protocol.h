@@ -959,7 +959,8 @@ enum scmi_std_protocol {
 	SCMI_PROTOCOL_VOLTAGE = 0x17,
 	SCMI_PROTOCOL_POWERCAP = 0x18,
 	SCMI_PROTOCOL_PINCTRL = 0x19,
-	SCMI_PROTOCOL_HAILO,
+	/* SCU 펌웨어 및 DT의 protocol@81과 동일한 vendor 프로토콜 ID이다. */
+	SCMI_PROTOCOL_HAILO = 0x81,
 };
 
 enum scmi_system_events {

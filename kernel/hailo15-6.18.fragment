@@ -4,7 +4,7 @@
 # dropped symbols that do not exist in 6.18 Kconfig (ARM64_AC57), kept
 # buildable on 6.18 (SCMI Hailo protocol, CMA rework, etc.).
 #
-# NOTE: applied with 05-apply-fragment.py (whole-file in-place rewrite).
+# Yocto의 hailo15.config에 반영하고 verify-yocto-build.sh로 최종 설정을 대조한다.
 
 CONFIG_ARCH_HAILO15=y
 
@@ -62,5 +62,6 @@ CONFIG_USB_LIBCOMPOSITE=m
 CONFIG_USB_F_HAILO_RFS_LOAD=m
 CONFIG_USB_F_HAILO_SWU_LOAD=m
 CONFIG_USB_HAILO_GADGET=m
+CONFIG_PHY_HAILO_TORRENT=m
 
 # misc: hailo15-evb-cpld builds under ARCH_HAILO15 (no dedicated Kconfig option in 1.12.1)

@@ -348,6 +348,7 @@ static const struct scmi_protocol_events hailo_protocol_events = {
 
 static const struct scmi_protocol scmi_hailo = {
 	.id = SCMI_PROTOCOL_HAILO,
+	.vendor_id = "hailo",
 	.owner = THIS_MODULE,
 	.instance_init = &scmi_hailo_protocol_init,
 	.ops = &hailo_proto_ops,
