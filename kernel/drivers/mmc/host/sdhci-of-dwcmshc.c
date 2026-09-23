@@ -12,6 +12,7 @@
 #include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
+#include <linux/gpio/consumer.h>
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -218,6 +219,32 @@ struct rk35xx_priv {
 };
 
 #define DWCMSHC_MAX_OTHER_CLKS 3
+
+enum hailo_pad_config {
+	HAILO_TXSLEW_N,
+	HAILO_TXSLEW_P,
+	HAILO_WEAKPULL,
+	HAILO_RXSEL,
+	HAILO_PAD_CONFIG_COUNT,
+};
+
+struct dwcmshc_hailo_priv {
+	struct clk *div_bypass;
+	bool bypass_enabled;
+	struct gpio_desc *vsel;
+	bool vsel_high;
+	u32 card_is_emmc;
+	u32 cmd_pad[HAILO_PAD_CONFIG_COUNT];
+	u32 dat_pad[HAILO_PAD_CONFIG_COUNT];
+	u32 rst_pad[HAILO_PAD_CONFIG_COUNT];
+	u32 clk_pad[HAILO_PAD_CONFIG_COUNT];
+	u32 clk_delay[2];
+	u32 drive_strength[2];
+};
+
+#define HAILO_PHY_PAD_RXSEL_MASK	GENMASK(2, 0)
+#define HAILO_PHY_DELAY_MASK	GENMASK(6, 0)
+#define HAILO_AT_WINDOW_MASK	GENMASK(30, 24)
 
 struct dwcmshc_priv {
 	struct clk	*bus_clk;
@@ -1120,6 +1147,307 @@ static int sg2042_init(struct device *dev, struct sdhci_host *host,
 					     ARRAY_SIZE(clk_ids), clk_ids);
 }
 
+/* Hailo BSP v1.12.1의 PHY·클럭 계약을 6.18의 플랫폼 콜백에 맞춘다. */
+static struct dwcmshc_hailo_priv *dwcmshc_hailo_priv(struct sdhci_host *host)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct dwcmshc_priv *priv = sdhci_pltfm_priv(pltfm_host);
+
+	return priv->priv;
+}
+
+static int dwcmshc_hailo_read_pad(struct device_node *np, const char *name,
+				 u32 *pad)
+{
+	int ret;
+
+	ret = of_property_read_u32_array(np, name, pad, HAILO_PAD_CONFIG_COUNT);
+	if (ret)
+		return ret;
+	if (pad[HAILO_TXSLEW_N] > 15 || pad[HAILO_TXSLEW_P] > 15 ||
+	    pad[HAILO_WEAKPULL] > 3 || pad[HAILO_RXSEL] > 7)
+		return -EINVAL;
+	return 0;
+}
+
+static int dwcmshc_hailo_read_phy(struct device *dev,
+				struct dwcmshc_hailo_priv *priv)
+{
+	struct device_node *np __free(device_node) =
+		of_get_child_by_name(dev->of_node, "phy-config");
+	int ret;
+
+	if (!np)
+		return -EINVAL;
+	ret = of_property_read_u32(np, "card-is-emmc", &priv->card_is_emmc);
+	if (ret)
+		return ret;
+	ret = dwcmshc_hailo_read_pad(np, "cmd-pad-values", priv->cmd_pad);
+	if (ret)
+		return ret;
+	ret = dwcmshc_hailo_read_pad(np, "dat-pad-values", priv->dat_pad);
+	if (ret)
+		return ret;
+	ret = dwcmshc_hailo_read_pad(np, "rst-pad-values", priv->rst_pad);
+	if (ret)
+		return ret;
+	ret = dwcmshc_hailo_read_pad(np, "clk-pad-values", priv->clk_pad);
+	if (ret)
+		return ret;
+	ret = of_property_read_u32_array(np, "sdclkdl-cnfg", priv->clk_delay, 2);
+	if (ret)
+		return ret;
+	ret = of_property_read_u32_array(np, "drive-strength", priv->drive_strength, 2);
+	if (ret)
+		return ret;
+	if (priv->card_is_emmc > 1 || priv->clk_delay[0] > 1 ||
+	    priv->clk_delay[1] > 127 || priv->drive_strength[0] > 15 ||
+	    priv->drive_strength[1] > 15)
+		return -EINVAL;
+	return 0;
+}
+
+static void dwcmshc_hailo_write_pad(struct sdhci_host *host, unsigned int reg,
+				  const u32 *pad)
+{
+	u16 val = sdhci_readw(host, reg);
+
+	val &= ~(PHY_PAD_TXSLEW_CTRL_N_MASK | PHY_PAD_TXSLEW_CTRL_P_MASK |
+		 PHY_PAD_WEAKPULL_MASK | HAILO_PHY_PAD_RXSEL_MASK);
+	val |= FIELD_PREP(PHY_PAD_TXSLEW_CTRL_N_MASK, pad[HAILO_TXSLEW_N]) |
+	       FIELD_PREP(PHY_PAD_TXSLEW_CTRL_P_MASK, pad[HAILO_TXSLEW_P]) |
+	       FIELD_PREP(PHY_PAD_WEAKPULL_MASK, pad[HAILO_WEAKPULL]) |
+	       FIELD_PREP(HAILO_PHY_PAD_RXSEL_MASK, pad[HAILO_RXSEL]);
+	sdhci_writew(host, val, reg);
+}
+
+static int dwcmshc_hailo_phy_init(struct sdhci_host *host)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct dwcmshc_priv *dwc = sdhci_pltfm_priv(pltfm_host);
+	struct dwcmshc_hailo_priv *priv = dwc->priv;
+	u32 val, reg;
+	u16 val16;
+	u8 val8;
+	int ret;
+
+	reg = dwc->vendor_specific_area1 + DWCMSHC_EMMC_CONTROL;
+	val = sdhci_readl(host, reg) & ~DWCMSHC_CARD_IS_EMMC;
+	if (priv->card_is_emmc)
+		val |= DWCMSHC_CARD_IS_EMMC;
+	sdhci_writel(host, val, reg);
+	dwcmshc_hailo_write_pad(host, PHY_CMDPAD_CNFG_R, priv->cmd_pad);
+	dwcmshc_hailo_write_pad(host, PHY_DATAPAD_CNFG_R, priv->dat_pad);
+	dwcmshc_hailo_write_pad(host, PHY_RSTNPAD_CNFG_R, priv->rst_pad);
+	dwcmshc_hailo_write_pad(host, PHY_CLKPAD_CNFG_R, priv->clk_pad);
+
+	/* reset 콜백에서도 호출하므로 잠들지 않고, PHY 이상 시 대기를 끝낸다. */
+	ret = readl_poll_timeout_atomic(host->ioaddr + PHY_CNFG_R, val,
+				       val & PHY_CNFG_PHY_PWRGOOD_MASK, 1, 100000);
+	if (ret)
+		return ret;
+	val |= PHY_CNFG_RSTN_DEASSERT;
+	sdhci_writel(host, val, PHY_CNFG_R);
+	val16 = sdhci_readw(host, SDHCI_CLOCK_CONTROL) | SDHCI_CLOCK_PLL_EN;
+	sdhci_writew(host, val16, SDHCI_CLOCK_CONTROL);
+
+	val8 = sdhci_readb(host, PHY_SDCLKDL_CNFG_R) & ~PHY_SDCLKDL_CNFG_EXTDLY_EN;
+	if (priv->clk_delay[0])
+		val8 |= PHY_SDCLKDL_CNFG_EXTDLY_EN;
+	sdhci_writeb(host, val8, PHY_SDCLKDL_CNFG_R);
+	val16 = sdhci_readw(host, PHY_SDCLKDL_DC_R) & ~HAILO_PHY_DELAY_MASK;
+	val16 |= FIELD_PREP(HAILO_PHY_DELAY_MASK, priv->clk_delay[1]);
+	sdhci_writew(host, val16, PHY_SDCLKDL_DC_R);
+	val = sdhci_readl(host, PHY_CNFG_R);
+	val &= ~(PHY_CNFG_PAD_SP_MASK | PHY_CNFG_PAD_SN_MASK);
+	val |= FIELD_PREP(PHY_CNFG_PAD_SP_MASK, priv->drive_strength[0]) |
+	       FIELD_PREP(PHY_CNFG_PAD_SN_MASK, priv->drive_strength[1]);
+	sdhci_writel(host, val, PHY_CNFG_R);
+
+	/* BSP와 동일하게 튜닝 전송과 샘플링 윈도우를 초기화한다. */
+	val16 = sdhci_readw(host, SDHCI_BLOCK_SIZE) & ~GENMASK(11, 0);
+	sdhci_writew(host, val16 | 512, SDHCI_BLOCK_SIZE);
+	sdhci_writew(host, 1, SDHCI_BLOCK_COUNT);
+	val16 = sdhci_readw(host, SDHCI_TRANSFER_MODE);
+	val16 |= SDHCI_TRNS_BLK_CNT_EN | SDHCI_TRNS_READ | SDHCI_TRNS_MULTI;
+	sdhci_writew(host, val16, SDHCI_TRANSFER_MODE);
+	reg = dwc->vendor_specific_area1 + DWCMSHC_EMMC_ATCTRL;
+	val = sdhci_readl(host, reg) & ~HAILO_AT_WINDOW_MASK;
+	val |= AT_CTRL_SWIN_TH_EN |
+	       FIELD_PREP(HAILO_AT_WINDOW_MASK, priv->card_is_emmc ? 0x3c : 0x1f);
+	sdhci_writel(host, val, reg);
+	return 0;
+}
+
+static void dwcmshc_hailo_reset(struct sdhci_host *host, u8 mask)
+{
+	sdhci_reset(host, mask);
+	if ((mask & SDHCI_RESET_ALL) && dwcmshc_hailo_phy_init(host))
+		dev_err(mmc_dev(host->mmc), "PHY power-good timeout after reset\n");
+}
+
+static void dwcmshc_hailo_set_vdd(struct sdhci_host *host, bool low_voltage)
+{
+	struct dwcmshc_hailo_priv *priv = dwcmshc_hailo_priv(host);
+
+	if (!priv->vsel)
+		return;
+	gpiod_set_value_cansleep(priv->vsel, low_voltage == priv->vsel_high);
+	usleep_range(2500, 3000);
+}
+
+static void dwcmshc_hailo_hw_reset(struct sdhci_host *host)
+{
+	if (dwcmshc_hailo_phy_init(host))
+		dev_err(mmc_dev(host->mmc), "PHY power-good timeout on card reset\n");
+	dwcmshc_hailo_set_vdd(host, false);
+}
+
+static void dwcmshc_hailo_voltage_switch(struct sdhci_host *host)
+{
+	dwcmshc_hailo_set_vdd(host, true);
+}
+
+static void dwcmshc_hailo_disable_bypass(void *data)
+{
+	struct dwcmshc_hailo_priv *priv = data;
+
+	if (priv->bypass_enabled) {
+		clk_disable_unprepare(priv->div_bypass);
+		priv->bypass_enabled = false;
+	}
+}
+
+static void dwcmshc_hailo_set_clock(struct sdhci_host *host, unsigned int clock)
+{
+	struct dwcmshc_hailo_priv *priv = dwcmshc_hailo_priv(host);
+	bool bypass = clock && clock >= host->max_clk;
+	unsigned int div;
+	u16 clk;
+	int ret;
+
+	host->mmc->actual_clock = 0;
+	sdhci_writew(host, 0, SDHCI_CLOCK_CONTROL);
+	if (!bypass)
+		dwcmshc_hailo_disable_bypass(priv);
+	if (!clock)
+		return;
+	if (bypass && !priv->bypass_enabled) {
+		ret = clk_prepare_enable(priv->div_bypass);
+		if (ret) {
+			dev_err(mmc_dev(host->mmc), "Failed to enable divider bypass: %d\n", ret);
+			return;
+		}
+		priv->bypass_enabled = true;
+	}
+
+	/* Hailo의 분주값은 표준 SDHCI의 2배 인코딩과 다르다. */
+	div = bypass ? 1 : clamp_t(unsigned int, DIV_ROUND_UP(host->max_clk, clock), 2, 1023);
+	host->mmc->actual_clock = host->max_clk / div;
+	clk = (div & SDHCI_DIV_MASK) << SDHCI_DIVIDER_SHIFT;
+	clk |= ((div & SDHCI_DIV_HI_MASK) >> SDHCI_DIV_MASK_LEN) << SDHCI_DIVIDER_HI_SHIFT;
+	sdhci_enable_clk(host, clk);
+}
+
+static unsigned int dwcmshc_hailo_get_min_clock(struct sdhci_host *host)
+{
+	/* BSP MSW-2498: 저속 응답 이상으로 식별 클럭 하한을 800 kHz로 유지한다. */
+	return 800000;
+}
+
+static int dwcmshc_hailo_execute_tuning(struct mmc_host *mmc, u32 opcode)
+{
+	struct sdhci_host *host = mmc_priv(mmc);
+	int ret;
+
+	ret = sdhci_execute_tuning(mmc, opcode);
+	/* BSP MSW-6198: 전체 128-tap 튜닝을 한 번 더 시도한다. */
+	if (ret || host->tuning_err)
+		ret = sdhci_execute_tuning(mmc, opcode);
+	return ret;
+}
+
+static int dwcmshc_hailo_init(struct device *dev, struct sdhci_host *host,
+			    struct dwcmshc_priv *dwc)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct dwcmshc_hailo_priv *priv;
+	struct reset_control *mux;
+	int ret;
+
+	if (IS_ERR(dwc->bus_clk))
+		return dev_err_probe(dev, PTR_ERR(dwc->bus_clk), "Failed to get bus clock\n");
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
+	dwc->priv = priv;
+	ret = dwcmshc_hailo_read_phy(dev, priv);
+	if (ret)
+		return dev_err_probe(dev, ret, "Invalid Hailo phy-config\n");
+
+	if (of_device_is_compatible(dev->of_node, "hailo,dwcmshc-sdhci-1")) {
+		mux = devm_reset_control_get_exclusive(dev, "sdio1-8bit-mux");
+		if (IS_ERR(mux))
+			return dev_err_probe(dev, PTR_ERR(mux), "Failed to get SDIO mux\n");
+		ret = host->mmc->caps & MMC_CAP_8_BIT_DATA ?
+			reset_control_deassert(mux) : reset_control_assert(mux);
+		if (ret)
+			return ret;
+	}
+	priv->div_bypass = devm_clk_get(dev, "clk_div_bypass");
+	if (IS_ERR(priv->div_bypass))
+		return dev_err_probe(dev, PTR_ERR(priv->div_bypass), "Failed to get bypass clock\n");
+	ret = devm_add_action_or_reset(dev, dwcmshc_hailo_disable_bypass, priv);
+	if (ret)
+		return ret;
+	priv->vsel_high = of_property_read_bool(dev->of_node, "sd-vsel-polarity-high");
+	priv->vsel = devm_gpiod_get_optional(dev, "sd-vsel",
+			priv->vsel_high ? GPIOD_OUT_LOW : GPIOD_OUT_HIGH);
+	if (IS_ERR(priv->vsel))
+		return dev_err_probe(dev, PTR_ERR(priv->vsel), "Failed to get voltage GPIO\n");
+	dwcmshc_hailo_set_vdd(host, false);
+
+	/* 기존 공통 suspend/resume·오류 경로가 card_clk도 함께 정리하도록 한다. */
+	dwc->other_clks[0].id = "card_clk";
+	ret = devm_clk_bulk_get_optional(dev, 1, dwc->other_clks);
+	if (ret)
+		return ret;
+	ret = clk_bulk_prepare_enable(1, dwc->other_clks);
+	if (ret)
+		return ret;
+	dwc->num_other_clks = 1;
+	host->timeout_clk = DIV_ROUND_UP(clk_get_rate(pltfm_host->clk), 1000);
+	host->tuning_loop_count = 128;
+	host->mmc_host_ops.execute_tuning = dwcmshc_hailo_execute_tuning;
+	ret = dwcmshc_hailo_phy_init(host);
+	if (ret)
+		return dev_err_probe(dev, ret, "PHY power-good timeout\n");
+	return 0;
+}
+
+static const struct sdhci_ops sdhci_dwcmshc_hailo_ops = {
+	.set_clock = dwcmshc_hailo_set_clock,
+	.set_bus_width = sdhci_set_bus_width,
+	.set_uhs_signaling = dwcmshc_set_uhs_signaling,
+	.get_max_clock = dwcmshc_get_max_clock,
+	.get_min_clock = dwcmshc_hailo_get_min_clock,
+	.reset = dwcmshc_hailo_reset,
+	.adma_write_desc = dwcmshc_adma_write_desc,
+	.hw_reset = dwcmshc_hailo_hw_reset,
+	.voltage_switch = dwcmshc_hailo_voltage_switch,
+};
+
+static const struct dwcmshc_pltfm_data sdhci_dwcmshc_hailo_pdata = {
+	.pdata = {
+		.ops = &sdhci_dwcmshc_hailo_ops,
+		.quirks = SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN |
+			  SDHCI_QUIRK_BROKEN_TIMEOUT_VAL |
+			  SDHCI_QUIRK_BROKEN_CARD_DETECTION,
+		.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
+	},
+	.init = dwcmshc_hailo_init,
+};
+
 static const struct sdhci_ops sdhci_dwcmshc_ops = {
 	.set_clock		= sdhci_set_clock,
 	.set_bus_width		= sdhci_set_bus_width,
@@ -1331,6 +1659,14 @@ dsbl_cqe_caps:
 }
 
 static const struct of_device_id sdhci_dwcmshc_dt_ids[] = {
+	{
+		.compatible = "hailo,dwcmshc-sdhci-0",
+		.data = &sdhci_dwcmshc_hailo_pdata,
+	},
+	{
+		.compatible = "hailo,dwcmshc-sdhci-1",
+		.data = &sdhci_dwcmshc_hailo_pdata,
+	},
 	{
 		.compatible = "rockchip,rk3588-dwcmshc",
 		.data = &sdhci_dwcmshc_rk35xx_pdata,

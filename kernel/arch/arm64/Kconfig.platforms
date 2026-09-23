@@ -153,6 +153,7 @@ config ARCH_LG1K
 
 config ARCH_HAILO15
 	bool "Hailo-15 SoC"
+	select MAILBOX
 	select ARM_PL320_MBOX
 	select ARCH_DMA_ADDR_T_64BIT
 	select REGMAP_I2C

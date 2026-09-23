@@ -92,6 +92,13 @@ config PL320_MBOX
 	  Management Engine, primarily for cpufreq. Say Y here if you want
 	  to use the PL320 IPCM support.
 
+config ARM_PL320_MBOX
+	bool "ARM PL320 Mailbox for Hailo"
+	depends on OF && HAS_IOMEM
+	help
+	  Hailo SCU와 통신하는 ARM PL320 mailbox 컨트롤러를 지원한다.
+	  Calxeda 전용 PL320_MBOX와 달리 표준 mailbox 프레임워크를 사용한다.
+
 config ARMADA_37XX_RWTM_MBOX
 	tristate "Armada 37xx rWTM BIU Mailbox"
 	depends on ARCH_MVEBU || COMPILE_TEST

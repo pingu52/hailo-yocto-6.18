@@ -10,7 +10,9 @@ Hailo15 EVB의 Linux 6.18.52 커널과 최소 rootfs를 Yocto Wrynose에서 빌�
 - 소스: `/home/pingu52/work/hailo-yocto-6.18/kernel`
 - `MACHINE`: `hailo15-evb-2-camera-vpu`, `DISTRO`: `hailo`
 - `BBLAYERS`에 Wrynose의 `meta`와 이 레이어를 등록한다.
-- 호스트 검증 도구: Bash, awk, GNU binutils, file, tar, gzip, zstd, e2fsprogs.
+- 호스트 검증 도구: Bash, awk, GNU binutils, file, tar, gzip, zstd, e2fsprogs, `fdtget`.
+- `fdtget`은 호스트의 `device-tree-compiler` 패키지 또는 `bitbake dtc-native`로 준비한다.
+  PATH에 없으면 `FDTGET=/절대/경로/fdtget`을 지정한다.
 
 빌드 환경에서 다음 명령으로 커널과 rootfs의 로그를 각각 보관한다.
 병렬도는 `conf/local.conf`의 `BB_NUMBER_THREADS`, `PARALLEL_MAKE`로 지정한다.
@@ -42,13 +44,19 @@ ART="$artifact_dir/self-test" ./verify-yocto-build.sh --self-test
 - 두 빌드 로그의 성공 요약과 `ERROR` 유무.
 - `hailo15-6.18.fragment`의 `y`, `m`, `n`, 숫자·문자열 값과 최종 `.config`의 일치.
 - ARM64 `Image` 형식, 소스 트리의 Image·DTB와 배포 파일의 일치.
-- `vmlinux`의 SCMI·SoC·PWM·pinctrl·PMU·SCU log·CPLD·GPIO 핵심 심볼 각각의 존재.
+- `vmlinux`의 SCMI·SoC·PWM·pinctrl·PMU·SCU log·CPLD·GPIO·PL320·Hailo SDHCI 핵심 심볼 각각의 존재.
+- UART·타이머·SCMI reset·SDHCI·DMA 제한 풀·ext4 등 부팅 필수 설정의 builtin 유지.
+- builtin 드라이버의 DT 매칭 정보, SCMI mailbox 채널, SCU SCMI 버전 0.50.1,
+  UART 콘솔, SD/eMMC 클럭·PHY, SD DMA 제한 풀 설정.
+- 커널에 내장된 CPLD rev1/rev2/8-bit overlay를 적용한 SD/eMMC 활성화와 bus-width.
+- rootfs의 systemd init과 ttyS1 로그인 서비스 포함 여부. 로그인 자격 증명은 변경하지 않는다.
 - 모듈 아카이브와 rootfs 압축 무결성, ext4의 읽기 전용 `e2fsck -fn` 검사.
 - Hailo PHY·USB 모듈 4개의 모듈 아카이브·rootfs·manifest 포함 여부.
 - 배포 산출물의 SHA-256 기록.
-- `--self-test`: 정상 설정과 `y/m/n/숫자` 변경, 비활성 옵션 누락, 빈 fragment의 회귀 검사.
+- `--self-test`: 설정 값 변경·누락과 DT 문자열·셀 배열 비교 및 속성 누락의 회귀 검사.
 
 배포 디렉터리는 `build/tmp/deploy/images/hailo15-evb-2-camera-vpu/`이며,
 `Image`, DTB, `modules-*.tgz`, rootfs의 ext4·tar.zst·manifest를 제공한다.
 모듈은 rootfs에 설치하지만 USB gadget의 자동 실행 정책은 추가하지 않는다.
 이 검사의 통과는 보드 부팅이나 SCMI·PWM·ISP·DSP 실동작의 성공을 뜻하지 않는다.
+U-Boot/FIT/서명 형식, 실제 보드의 SCU 펌웨어 버전 및 저장매체 I/O는 별도 실장비 확인 대상이다.
