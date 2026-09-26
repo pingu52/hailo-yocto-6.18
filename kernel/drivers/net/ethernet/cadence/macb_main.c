@@ -33,7 +33,9 @@
 #include <linux/pm_runtime.h>
 #include <linux/ptp_classify.h>
 #include <linux/reset.h>
+#include <linux/soc/hailo/scmi_hailo_ops.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <linux/tcp.h>
 #include <linux/types.h>
 #include <linux/udp.h>
@@ -5360,6 +5362,38 @@ static const struct macb_config fu540_c000_config = {
 	.usrio = &macb_default_usrio,
 };
 
+/* Hailo-15 GEM: RMII 물리 계층은 SCMI 프로토콜을 통해 SoC 쪽에서
+ * 활성화해야 하므로 init 시점(5.15 Hailo 포크 이식, 6.18 struct 필드
+ * 세트에 맞춤)에 scmi_hailo_get_ops()->set_eth_rmii() 호출.
+ * Hailo-15 보드 dtb가 phy-mode=rgmii-id인 경우 이 분기는 통과되지 않으나
+ * rmii 실드 대응을 위해 5.15 Hailo 포크와 동일한 구조를 유지한다. */
+static int hailo15_init(struct platform_device *pdev)
+{
+	struct device_node *np = pdev->dev.of_node;
+	const char *pm;
+	const struct scmi_hailo_ops *hailo_protocol_ops;
+	int ret;
+
+	ret = of_property_read_string(np, "phy-mode", &pm);
+	if (ret == 0 && strcmp(pm, "rmii") == 0) {
+		hailo_protocol_ops = scmi_hailo_get_ops();
+		if (IS_ERR(hailo_protocol_ops))
+			return PTR_ERR(hailo_protocol_ops);
+
+		hailo_protocol_ops->set_eth_rmii();
+	}
+
+	return macb_init(pdev);
+}
+
+static const struct macb_config hailo15_config = {
+	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE,
+	.dma_burst_length = 16,
+	.clk_init = macb_clk_init,
+	.init = hailo15_init,
+	.usrio = &macb_default_usrio,
+};
+
 static const struct macb_config at91sam9260_config = {
 	.caps = MACB_CAPS_USRIO_HAS_CLKEN | MACB_CAPS_USRIO_DEFAULT_IS_MII_GMII,
 	.clk_init = macb_clk_init,
@@ -5531,6 +5565,7 @@ static const struct of_device_id macb_dt_ids[] = {
 	{ .compatible = "xlnx,zynqmp-gem", .data = &zynqmp_config},
 	{ .compatible = "xlnx,zynq-gem", .data = &zynq_config },
 	{ .compatible = "xlnx,versal-gem", .data = &versal_config},
+	{ .compatible = "hailo,hailo15-gem", .data = &hailo15_config },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, macb_dt_ids);
