@@ -91,4 +91,7 @@ CONFIG_USB_F_HAILO_SWU_LOAD=m
 CONFIG_USB_HAILO_GADGET=m
 CONFIG_PHY_HAILO_TORRENT=m
 
+# panic 시 정지하지 않고 즉시 재부팅 (1.12.1 defconfig와 동일)
+CONFIG_PANIC_TIMEOUT=-1
+
 # misc: hailo15-evb-cpld builds under ARCH_HAILO15 (no dedicated Kconfig option in 1.12.1)
