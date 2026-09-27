@@ -1,0 +1,49 @@
+/dts-v1/;
+/ {
+    description = "Kernel fitImage for Hailo-15 / 6.18.52 / public EVB";
+    #address-cells = <1>;
+
+    images {
+        kernel-1 {
+            description = "Linux 6.18.52 MACB (Hailo GEM port)";
+            data = /incbin/("/home/pingu52/work/artifacts/hailo-6.18-boot-probe/fitbuild/kernel-618-new.gz");
+            type = "kernel";
+            arch = "arm64";
+            os = "linux";
+            compression = "gzip";
+            load = <0x80c00000>;
+            entry = <0x80c00000>;
+            hash-1 {
+                algo = "sha256";
+                checksum = "yes";
+            };
+        };
+
+        fdt-evb.dtb {
+            description = "Hailo-15 EVB 2-camera VPU device tree (public Hailo dts)";
+            data = /incbin/("/home/pingu52/work/artifacts/hailo-6.18-boot-probe/fitbuild/evb.dtb");
+            type = "flat_dt";
+            arch = "arm64";
+            compression = "none";
+            load = <0x80800000>;
+            hash-1 {
+                algo = "sha256";
+                checksum = "yes";
+            };
+        };
+    };
+
+    configurations {
+        default = "conf-evb.dtb";
+
+        conf-evb.dtb {
+            description = "6.18 + public Hailo-15 EVB dtb (rootfs is p6, boot_option2 'root p6')";
+            kernel = "kernel-1";
+            fdt = "fdt-evb.dtb";
+            hash-1 {
+                algo = "sha256";
+                checksum = "yes";
+            };
+        };
+    };
+};
