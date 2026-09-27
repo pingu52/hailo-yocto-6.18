@@ -8,30 +8,14 @@
 - 618-public.its / make-fit.sh: FIT 재생성용 ITS와 스크립트
 - rootfs-6.18-minimal.squashfs: Yocto 6.0 core-image-minimal (gzip squashfs)
 
-## 부팅 절차 (보드가 5.15 u-boot 정상 상태일 때)
-
-1. u-Boot 콘솔에서 eMMC p2(ubifs) 파티션 마운트 확인 (5.15 기본 동작)
-2. FIT 파일을 ubifs의 u-boot 디렉토리에 fatload 가능한 형태로 전달
-   - 기존 슬롯B가 fitImage_2를 FAT에서 fatload 하므로, FIT를 FAT 볼륨
-     (p1, uboot FAT32)의 u-boot/ 하위로 복사:
-       mkdir -p /boot/uboot (5.15 컨솔에서, FAT 볼륨 마운트 경로 확인 후)
-       copy fitImage-6.18-public /boot/uboot/fitImage_2  (이름은 env와 일치)
-3. rootfs 준비 (p6 = rootfs2 파티션에 squashfs 40.7MB 기록)
-4. env:
-       setenv boot_option2
-       setenv root p6
-       saveenv
-5. 재부팅:
-       reset
-   슬롯B: FIT 로드(sha256 auto-check) -> 6.18 커널 + EVB dtb ->
-   root=/dev/mmcblk1p6 squashfs 마운트 -> login
-6. 6.18 확인:
-       uname -r   -> 6.18.52
+## 사용
+- FIT: U-Boot `bootm`으로 로드 (kernel load/entry 0x80c00000, fdt 0x80800000,
+  이미지별 sha256 해시 포함)
+- rootfs: squashfs를 rootfs 파티션에 기록하고 커널 인자 `root=`로 지정
+  (커널 SQUASHFS=y, SQUASHFS_ZLIB=y)
+- 6.18 확인:
+       uname -r   -> 6.18.52-hailo
        dmesg | grep -i gem   (MACB GEM 등록 확인)
-
-## 실패 시
-- FIT 해시 오류 / 부팅 실패 -> 재부팅하면 슬롯A(5.15) 자동 복구
-- 6.18 부팅 실패 시 5.15 슬롯A는 그대로 유지됨 (안전 폴백)
 
 ## GEM 이더넷
 public EVB dtb의 GEM 노드(compatible=hailo,hailo15-gem, reg=0x1b5000,

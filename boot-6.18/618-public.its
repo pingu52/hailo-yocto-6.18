@@ -37,7 +37,7 @@
         default = "conf-evb.dtb";
 
         conf-evb.dtb {
-            description = "6.18 + public Hailo-15 EVB dtb (rootfs is p6, boot_option2 'root p6')";
+            description = "6.18 + public Hailo-15 EVB dtb";
             kernel = "kernel-1";
             fdt = "fdt-evb.dtb";
             hash-1 {
