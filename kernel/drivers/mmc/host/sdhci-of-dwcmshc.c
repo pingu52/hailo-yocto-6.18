@@ -1789,7 +1789,9 @@ static int dwcmshc_probe(struct platform_device *pdev)
 #endif
 
 	caps = sdhci_readl(host, SDHCI_CAPABILITIES);
-	if (caps & SDHCI_CAN_64BIT_V4)
+	/* Hailo BSP의 기존 SDHCI 모드를 유지한다. */
+	if ((caps & SDHCI_CAN_64BIT_V4) &&
+	    pltfm_data != &sdhci_dwcmshc_hailo_pdata)
 		sdhci_enable_v4_mode(host);
 
 	host->mmc->caps |= MMC_CAP_WAIT_WHILE_BUSY;
