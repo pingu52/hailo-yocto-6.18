@@ -60,6 +60,16 @@ artifact_dir=$(mktemp -d /home/pingu52/work/artifacts/hailo-6.18-signed-fit-XXXX
   기록한다. 종료 코드 0은 생성·호스트 서명 검증 성공이며, 잘못된 사용법은 2,
   검사·생성 실패는 0이 아닌 값을 반환한다. 플래시나 부팅은 수행하지 않는다.
 
+## 시험 rootfs의 콘솔 암호
+
+`make-console-rootfs.py`는 root 계정이 잠긴 SquashFS를 입력받아 콘솔 암호를
+설정한 새 이미지를 만든다. `fakeroot`, `unsquashfs`, `mksquashfs`, `openssl`,
+Python 3.9 이상이 필요하다. 암호는 stdin으로만 공급하며 인자·환경변수에 넣지 않는다.
+`fakeroot python3 boot-6.18/make-console-rootfs.py <원본.squashfs> <새 artifact 경로>`로
+실행한다. 원본은 보존하고 기존 출력 디렉터리는 거부한다. 종료 코드 0은 생성 및
+shadow 읽기 검증 성공이다. `--self-test`는 계정 변경 범위와 입력 거부를 확인한다.
+결과 디렉터리에는 암호 해시를 포함한 rootfs가 있으므로 공유·커밋하지 않는다.
+
 ## 일반 부팅 확인
 
 - 대상 보드의 메모리 배치와 FIT의 load/entry 주소를 먼저 대조한다.

@@ -22,6 +22,8 @@
 #define MACB_GREGS_NBR 16
 #define MACB_GREGS_VERSION 2
 #define MACB_MAX_QUEUES 8
+#define HAILO15_MAX_QUEUES 16
+#define HAILO15_QUEUE0_SEGMENTS_LOG2 4
 
 /* MACB register offsets */
 #define MACB_NCR		0x0000 /* Network Control */
@@ -83,6 +85,9 @@
 #define GEM_NCFGR		0x0004 /* Network Config */
 #define GEM_USRIO		0x000c /* User IO */
 #define GEM_DMACFG		0x0010 /* DMA Configuration */
+#define GEM_HAILO15_SEG_ALLOC_LOWER	0x05a0
+#define GEM_HAILO15_SEG_ALLOC_UPPER	0x05a4
+#define GEM_HAILO15_RBQP_HIGH(q)		(0x05c0 + (((q) - 8) << 2))
 #define GEM_PBUFRXCUT		0x0044 /* RX Partial Store and Forward */
 #define GEM_JML			0x0048 /* Jumbo Max Length */
 #define GEM_HS_MAC_CONFIG	0x0050 /* GEM high speed config */
@@ -769,6 +774,7 @@
 #define MACB_CAPS_NEED_TSUCLK			0x00000400
 #define MACB_CAPS_QUEUE_DISABLE			0x00000800
 #define MACB_CAPS_QBV				0x00001000
+#define MACB_CAPS_HAILO15_QUEUES			0x00002000
 #define MACB_CAPS_PCS				0x01000000
 #define MACB_CAPS_HIGH_SPEED			0x02000000
 #define MACB_CAPS_CLK_HW_CHG			0x04000000

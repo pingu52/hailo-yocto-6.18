@@ -496,6 +496,20 @@ static void macb_init_buffers(struct macb *bp)
 	struct macb_queue *queue;
 	unsigned int q;
 
+	if (bp->caps & MACB_CAPS_HAILO15_QUEUES) {
+		/* BSP와 같이 큐 0만 사용한다. 하드웨어 큐 8~15도 차단해야 한다. */
+		for (q = 1; q < HAILO15_MAX_QUEUES; q++) {
+			gem_writel(bp, TBQP(q - 1), MACB_BIT(QUEUE_DISABLE));
+			if (q < 8)
+				gem_writel(bp, RBQP(q - 1), MACB_BIT(QUEUE_DISABLE));
+			else
+				gem_writel(bp, HAILO15_RBQP_HIGH(q), MACB_BIT(QUEUE_DISABLE));
+		}
+		/* 16개 TX 버퍼 세그먼트를 활성 큐 0에 할당한다. */
+		gem_writel(bp, HAILO15_SEG_ALLOC_LOWER, HAILO15_QUEUE0_SEGMENTS_LOG2);
+		gem_writel(bp, HAILO15_SEG_ALLOC_UPPER, 0);
+	}
+
 #ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
 	/* Single register for all queues' high 32 bits. */
 	if (bp->hw_dma_cap & HW_DMA_CAP_64B) {
@@ -5387,7 +5401,8 @@ static int hailo15_init(struct platform_device *pdev)
 }
 
 static const struct macb_config hailo15_config = {
-	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE,
+	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE | MACB_CAPS_QUEUE_DISABLE |
+		MACB_CAPS_HAILO15_QUEUES,
 	.dma_burst_length = 16,
 	.clk_init = macb_clk_init,
 	.init = hailo15_init,
@@ -5629,6 +5644,10 @@ static int macb_probe(struct platform_device *pdev)
 	native_io = hw_is_native_io(mem);
 
 	macb_probe_queues(mem, native_io, &queue_mask, &num_queues);
+	if (macb_config->caps & MACB_CAPS_HAILO15_QUEUES) {
+		queue_mask = BIT(0);
+		num_queues = 1;
+	}
 	dev = alloc_etherdev_mq(sizeof(*bp), num_queues);
 	if (!dev) {
 		err = -ENOMEM;
