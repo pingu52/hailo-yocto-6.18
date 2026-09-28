@@ -1,0 +1,43 @@
+/dts-v1/;
+/ {
+    description = "Linux 6.18.52 Hailo15 TRUEN FIT";
+    #address-cells = <1>;
+
+    images {
+        kernel-1 {
+            description = "Linux 6.18.52";
+            data = /incbin/("kernel.gz");
+            type = "kernel";
+            arch = "arm64";
+            os = "linux";
+            compression = "gzip";
+            load = <0x80c00000>;
+            entry = <0x80c00000>;
+            hash-1 { algo = "sha256"; };
+        };
+
+        fdt-truen_truen_board.dtb {
+            description = "TRUEN board device tree";
+            data = /incbin/("board.dtb");
+            type = "flat_dt";
+            arch = "arm64";
+            compression = "none";
+            load = <0x80800000>;
+            hash-1 { algo = "sha256"; };
+        };
+    };
+
+    configurations {
+        default = "conf-truen_truen_board.dtb";
+        conf-truen_truen_board.dtb {
+            description = "Linux kernel and TRUEN board device tree";
+            kernel = "kernel-1";
+            fdt = "fdt-truen_truen_board.dtb";
+            signature-1 {
+                algo = "sha256,rsa3072";
+                key-name-hint = "customer";
+                sign-images = "kernel", "fdt";
+            };
+        };
+    };
+};

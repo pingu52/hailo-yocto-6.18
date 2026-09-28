@@ -6,7 +6,7 @@
     images {
         kernel-1 {
             description = "Linux 6.18.52 MACB (Hailo GEM port)";
-            data = /incbin/("/home/pingu52/work/artifacts/hailo-6.18-boot-probe/fitbuild/kernel-618-new.gz");
+            data = /incbin/("kernel.gz");
             type = "kernel";
             arch = "arm64";
             os = "linux";
@@ -21,7 +21,7 @@
 
         fdt-evb.dtb {
             description = "Hailo-15 EVB 2-camera VPU device tree (public Hailo dts)";
-            data = /incbin/("/home/pingu52/work/artifacts/hailo-6.18-boot-probe/fitbuild/evb.dtb");
+            data = /incbin/("board.dtb");
             type = "flat_dt";
             arch = "arm64";
             compression = "none";
