@@ -157,6 +157,12 @@
 #define MEDIA_BUS_FMT_SGRBG16_1X16		0x301f
 #define MEDIA_BUS_FMT_SRGGB16_1X16		0x3020
 
+/* 기존 Hailo HDR 사용자 공간 ABI의 포맷 번호를 유지한다. */
+#define MEDIA_BUS_FMT_SRGGB12_2X12		0x3030
+#define MEDIA_BUS_FMT_SRGGB12_3X12		0x3031
+#define MEDIA_BUS_FMT_SGBRG12_2X12		0x3032
+#define MEDIA_BUS_FMT_SGBRG12_3X12		0x3033
+
 /* JPEG compressed formats - next is	0x4002 */
 #define MEDIA_BUS_FMT_JPEG_1X8			0x4001
 

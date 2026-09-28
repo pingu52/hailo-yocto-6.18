@@ -166,7 +166,8 @@ check "ELF 심볼 추출" save_symbols
 for symbol in scmi_hailo_register hailo_soc_probe hailo15_pwm_probe hailo15_pinctrl_probe \
   hailo_noc_pmu_driver_init scu_log_probe hailo15_evb_cpld_probe cmsdk_gpio_probe \
   pl320_mbox_probe dwcmshc_hailo_init dwcmshc_hailo_set_clock dwcmshc_hailo_phy_init \
-  scmi_clocks_probe scmi_reset_probe; do
+  scmi_clocks_probe scmi_reset_probe imx678_probe csi2rx_probe pixel_mux_probe \
+  hailo15_isp_probe xrp_boot; do
   check "ELF: $symbol" grep -Eq " ${symbol}(\\.|$)" "$ART/nm.txt"
 done
 save_builtin_aliases() { strings "$KERNEL_TREE/modules.builtin.modinfo" > "$ART/builtin-modinfo.txt"; }
@@ -221,16 +222,22 @@ check "rootfs init 실행 파일" grep -Fxq './usr/lib/systemd/systemd' "$ART/ro
 check "rootfs UART 로그인 서비스" grep -Fxq \
   './etc/systemd/system/getty.target.wants/serial-getty@ttyS1.service' "$ART/rootfs-list.txt"
 check "모듈 아카이브의 커널 버전" grep -Fq "/$RELEASE/kernel/drivers/" "$ART/modules-list.txt"
-for module in phy-hailo-torrent usb_f_hailo_rfs_load usb_f_hailo_swu_load g_hailo; do
+for module in phy-hailo-torrent usb_f_hailo_rfs_load usb_f_hailo_swu_load g_hailo hx280enc; do
   check "모듈 파일: $module" grep -Eq "/${module}\\.ko$" "$ART/modules-list.txt"
   check "rootfs 모듈: $module" grep -Eq "/${module}\\.ko$" "$ART/rootfs-list.txt"
   check "manifest 모듈: $module" grep -Eq "^kernel-module-${module//_/-}-${RELEASE} " "$MANI"
 done
+check "manifest DSP 펌웨어" grep -Eq '^hailo-dsp-firmware .* 1\.12\.1' "$MANI"
+firmware_hash_ok() {
+  tar --zstd -xOf "$TARZ" ./usr/lib/firmware/dsp-fw.elf | sha256sum |
+    grep -Fxq '084b539378128d925d91a98139d2be93cc29ad704e78b0856728bb0f845fe1ed  -'
+}
+check "rootfs DSP 펌웨어 1.12.1 무결성" firmware_hash_ok
 
 {
   printf '\n- 미실행: 새 커널의 보드 부팅, SCMI 통신, SD/eMMC 실매체 I/O, PWM 실패 경로의 실장비 주입, ISP·DSP 동작 검증.\n'
   printf '\n- U-Boot/FIT/서명 형식과 실제 보드의 SCU 펌웨어 버전은 별도 확인이 필요하다.\n'
-  printf '\n- ISP·DSP 전체 API 이식은 이번 빌드 검증 범위에 포함하지 않는다.\n'
+  printf '\n- ISP 사용자 공간 프로그램과 영상 처리·인코딩 품질은 이 빌드 검사로 검증하지 않는다.\n'
   printf '\n- [HEAD 대비 소스 변경분](source.patch)\n'
 } >> "$REPORT"
 finish

@@ -207,7 +207,6 @@ struct pixel_mux_priv {
 
 	struct v4l2_subdev subdev;
 	struct v4l2_async_notifier subdev_notifier;
-	struct v4l2_async_notifier video_notifier;
 	struct media_pad pads[PIXEL_MUX_PAD_MAX];
 	struct v4l2_mbus_framefmt pad_fmts[PIXEL_MUX_PAD_MAX];
 	int num_exposures;
@@ -226,7 +225,7 @@ struct pixel_mux_priv {
 };
 
 struct indexed_v4l2_async_subdev {
-	struct v4l2_async_subdev asd;
+	struct v4l2_async_connection asd;
 	int index;
 };
 
@@ -359,8 +358,8 @@ static irqreturn_t pixel_mux_error_irq_handler(int irq, void *data)
 static int pixel_mux_querycap(struct pixel_mux_priv *pixel_mux,
     struct v4l2_capability *cap)
 {
-    strlcpy((char *)cap->driver, HAILO_PIXEL_MUX_NAME, sizeof(cap->driver));
-    strlcpy((char *)cap->card, "HAILO", sizeof(cap->card));
+    strscpy((char *)cap->driver, HAILO_PIXEL_MUX_NAME, sizeof(cap->driver));
+    strscpy((char *)cap->card, "HAILO", sizeof(cap->card));
     memset(cap->bus_info, 0, sizeof(cap->bus_info));
     return 0;
 }
@@ -422,10 +421,10 @@ v4l2_subdev_to_pixel_mux(struct v4l2_subdev *subdev)
 
 static int hailo15_pixel_mux_async_bound(struct v4l2_async_notifier *subdev_notifier,
 				       struct v4l2_subdev *s_subdev,
-				       struct v4l2_async_subdev *asd)
+				       struct v4l2_async_connection *asd)
 {
-	struct v4l2_subdev *subdev = subdev_notifier->sd;
-	struct pixel_mux_priv *pixel_mux = v4l2_subdev_to_pixel_mux(subdev);
+	struct pixel_mux_priv *pixel_mux = container_of(subdev_notifier,
+					struct pixel_mux_priv, subdev_notifier);
 	struct indexed_v4l2_async_subdev *iasd = container_of(asd,
 							       struct indexed_v4l2_async_subdev,
 							       asd);
@@ -600,7 +599,7 @@ static int pixel_mux_s_stream(struct v4l2_subdev *sd, int enable)
 
 	pad = &pixel_mux->pads[pixel_mux_grp_id_to_sink_pad_index(sd->grp_id)];
 	if (pad)
-		pad = media_entity_remote_pad(pad);
+		pad = media_pad_remote_pad_first(pad);
 
 	if (pad && is_media_entity_v4l2_subdev(pad->entity)) {
 		subdev = media_entity_to_v4l2_subdev(pad->entity);
@@ -702,7 +701,7 @@ static int pixel_mux_set_fmt(struct v4l2_subdev *sd,
 	sink_pad_idx = pixel_mux_grp_id_to_sink_pad_index(sd->grp_id);
 	pad = &pixel_mux->pads[sink_pad_idx];
 	if (pad)
-		pad = media_entity_remote_pad(pad);
+		pad = media_pad_remote_pad_first(pad);
 
 	if (pad && is_media_entity_v4l2_subdev(pad->entity)) {
 		subdev = media_entity_to_v4l2_subdev(pad->entity);
@@ -748,8 +747,6 @@ static int hailo15_pixel_mux_async_complete(struct v4l2_async_notifier *video_no
 static const struct v4l2_async_notifier_operations
 hailo15_pixel_mux_subdev_notifier_ops = {
 	.bound = hailo15_pixel_mux_async_bound,
-},
-hailo15_pixel_mux_video_notifier_ops = {
 	.complete = hailo15_pixel_mux_async_complete,
 };
 
@@ -757,20 +754,16 @@ static int
 hailo15_pixel_mux_parse_dt(struct pixel_mux_priv *hailo15_pixel_mux)
 {
 	struct indexed_v4l2_async_subdev *asd;
-	struct fwnode_handle *fwh;
+	struct fwnode_handle *fwh, *remote;
 	struct device_node *ep;
 	int ret;
 	int i = 0;
 	bool valid_ep_found = false;
 
 	dev_dbg(hailo15_pixel_mux->dev, "Parsing DT\n");
-	v4l2_async_notifier_init(&hailo15_pixel_mux->subdev_notifier);
-	v4l2_async_notifier_init(&hailo15_pixel_mux->video_notifier);
-
-	hailo15_pixel_mux->video_notifier.ops = &hailo15_pixel_mux_video_notifier_ops;
-	v4l2_async_notifier_register(hailo15_pixel_mux->subdev.v4l2_dev, &hailo15_pixel_mux->video_notifier);
-
-	hailo15_pixel_mux->subdev_notifier.parent = &hailo15_pixel_mux->video_notifier;
+	/* Hailo 그래프가 직접 등록한 pixel-mux에서 CSI와 센서 체인을 연결한다. */
+	v4l2_async_nf_init(&hailo15_pixel_mux->subdev_notifier,
+			   hailo15_pixel_mux->subdev.v4l2_dev);
 
 	/* Iterate over sink ports (0-1) */
 	/* NOTE: pad number matches port number */
@@ -783,18 +776,22 @@ hailo15_pixel_mux_parse_dt(struct pixel_mux_priv *hailo15_pixel_mux)
 
 		fwh = of_fwnode_handle(ep);
 
-		ret = fwnode_device_is_available(fwnode_graph_get_remote_port_parent(fwh));
+		remote = fwnode_graph_get_remote_port_parent(fwh);
+		ret = remote && fwnode_device_is_available(remote);
+		fwnode_handle_put(remote);
 		if (!ret) {
 			dev_dbg(hailo15_pixel_mux->dev, "The device of port #%d is disabled in the device tree (fwnode_device_is_available returned %d)", i, ret);
+			of_node_put(ep);
 			continue;
 		}
 
-		asd = v4l2_async_notifier_add_fwnode_remote_subdev(
+		asd = v4l2_async_nf_add_fwnode_remote(
 			&hailo15_pixel_mux->subdev_notifier, fwh, struct indexed_v4l2_async_subdev);
 		of_node_put(ep);
 		if (IS_ERR(asd)) {
 			dev_err(hailo15_pixel_mux->dev, "Failed to add port #%d remote subdev notifier\n", i);
-			return PTR_ERR(asd);
+			ret = PTR_ERR(asd);
+			goto cleanup_notifier;
 		}
 
 		asd->index = i;
@@ -804,18 +801,21 @@ hailo15_pixel_mux_parse_dt(struct pixel_mux_priv *hailo15_pixel_mux)
 
 	if (!valid_ep_found) {
 		dev_err(hailo15_pixel_mux->dev, "No valid sink endpoints in DT\n");
-		return -ENODEV;
+		ret = -ENODEV;
+		goto cleanup_notifier;
 	}
 
 	hailo15_pixel_mux->subdev_notifier.ops = &hailo15_pixel_mux_subdev_notifier_ops;
-	hailo15_pixel_mux->subdev_notifier.sd = &hailo15_pixel_mux->subdev;
-	ret = v4l2_async_subdev_notifier_register(&hailo15_pixel_mux->subdev,
-						  &hailo15_pixel_mux->subdev_notifier);
+	ret = v4l2_async_nf_register(&hailo15_pixel_mux->subdev_notifier);
 	if (ret) {
 		dev_err(hailo15_pixel_mux->dev, "Failed to register subdev notifier\n");
-		v4l2_async_notifier_cleanup(&hailo15_pixel_mux->subdev_notifier);
+		goto cleanup_notifier;
 	}
 
+	return 0;
+
+cleanup_notifier:
+	v4l2_async_nf_cleanup(&hailo15_pixel_mux->subdev_notifier);
 	return ret;
 }
 
@@ -826,8 +826,17 @@ static int hailo15_pixel_mux_registered(struct v4l2_subdev* sd)
 	return hailo15_pixel_mux_parse_dt(hailo15_pixel_mux_priv);
 }
 
+static void hailo15_pixel_mux_unregistered(struct v4l2_subdev *sd)
+{
+	struct pixel_mux_priv *pixel_mux = v4l2_subdev_to_pixel_mux(sd);
+
+	v4l2_async_nf_unregister(&pixel_mux->subdev_notifier);
+	v4l2_async_nf_cleanup(&pixel_mux->subdev_notifier);
+}
+
 static struct v4l2_subdev_internal_ops hailo15_pixel_mux_internal_ops = {
 	.registered = hailo15_pixel_mux_registered,
+	.unregistered = hailo15_pixel_mux_unregistered,
 };
 
 static struct v4l2_subdev_core_ops pixel_mux_core_ops = {
@@ -1034,7 +1043,7 @@ static int pixel_mux_probe(struct platform_device *pdev)
 	v4l2_subdev_init(subdev, &pixel_mux_subdev_ops);
 
 	// v4l2_set_subdevdata(&pixel_mux->subdev, &pdev->dev);
-	snprintf(subdev->name, V4L2_SUBDEV_NAME_SIZE, "%s.%s", KBUILD_MODNAME,
+	snprintf(subdev->name, sizeof(subdev->name), "%s.%s", KBUILD_MODNAME,
 		 dev_name(&pdev->dev));
 	subdev->internal_ops = &hailo15_pixel_mux_internal_ops;
 	subdev->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
@@ -1103,19 +1112,17 @@ err_alloc_dma_ctx:
 	return ret;
 }
 
-static int pixel_mux_remove(struct platform_device *pdev)
+static void pixel_mux_remove(struct platform_device *pdev)
 {
 	struct pixel_mux_priv *pixel_mux = platform_get_drvdata(pdev);
 	dev_info(&pdev->dev, "%s enter\n", __func__);
 
-	media_entity_cleanup(&pixel_mux->subdev.entity);
 	v4l2_async_unregister_subdev(&pixel_mux->subdev);
+	media_entity_cleanup(&pixel_mux->subdev.entity);
 
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_set_suspended(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 /*

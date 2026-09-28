@@ -268,13 +268,10 @@ static int xvp_open(struct inode *inode, struct file *filp)
 
     rc = xrp_boot(xvp);
     if (rc < 0)
-        goto exit;
+        return rc;
 
-    rc = 0;
-
-exit:
     xrp_add_known_file(filp);
-    return rc;
+    return 0;
 }
 
 static int xvp_close(struct inode *inode, struct file *filp)
@@ -289,7 +286,6 @@ static int xvp_close(struct inode *inode, struct file *filp)
 
 static const struct file_operations xvp_fops = {
     .owner = THIS_MODULE,
-    .llseek = no_llseek,
     .unlocked_ioctl = xvp_ioctl,
 #ifdef CONFIG_COMPAT
     .compat_ioctl = xvp_ioctl,
@@ -324,7 +320,6 @@ static ssize_t xvp_log_read(struct file *f, char __user *buffer, size_t size,
 
 static const struct file_operations xvp_log_fops = {
 	.owner  = THIS_MODULE,
-	.llseek = no_llseek,
 	.open = xvp_log_open,
 	.release = xvp_log_close,
 	.read = xvp_log_read,
@@ -467,7 +462,7 @@ static int xrp_init_common(struct platform_device *pdev, struct xvp *xvp)
         goto err_free_pool;
     }
 
-    nodeid = ida_simple_get(&xvp_nodeid, 0, 0, GFP_KERNEL);
+    nodeid = ida_alloc(&xvp_nodeid, GFP_KERNEL);
     if (nodeid < 0) {
         ret = nodeid;
         goto err_free_pool;
@@ -505,7 +500,7 @@ static int xrp_init_common(struct platform_device *pdev, struct xvp *xvp)
 err_free_dev:
     misc_deregister(&xvp->miscdev);
 err_free_id:
-    ida_simple_remove(&xvp_nodeid, nodeid);
+    ida_free(&xvp_nodeid, nodeid);
 err_free_pool:
     xrp_free_pool(xvp->pool);
 err_free_comm:
@@ -544,12 +539,12 @@ static int xrp_init_hailo15l(struct platform_device *pdev, struct xvp *xvp)
     return xrp_init_common(pdev, xvp);
 }
 
-static int xrp_deinit(struct platform_device *pdev)
+static void xrp_deinit(struct platform_device *pdev)
 {
     struct xvp *xvp = platform_get_drvdata(pdev);
 
     if (!xvp) {
-        return 0;
+        return;
     }
 
     misc_deregister(&xvp->misclogdev);
@@ -558,13 +553,12 @@ static int xrp_deinit(struct platform_device *pdev)
     xrp_free_pool(xvp->pool);
     dma_free_attrs(
         xvp->dev, xvp->comm.size, xvp->comm.addr, xvp->comm.dma_addr, 0);
-    ida_simple_remove(&xvp_nodeid, xvp->nodeid);
+    ida_free(&xvp_nodeid, xvp->nodeid);
     (void)xrp_unshare(xvp, xvp->cyclic_log.mapping, XRP_FLAG_READ_WRITE);
     kfree(xvp->cyclic_log.mapping);    
     pm_runtime_set_suspended(xvp->dev);
     pm_runtime_disable(xvp->dev);
     devm_kfree(&pdev->dev, xvp);
-    return 0;
 }
 
 static const struct of_device_id xrp_of_match[] = {
@@ -619,9 +613,9 @@ static int xrp_probe(struct platform_device *pdev)
     return 0;
 }
 
-static int xrp_remove(struct platform_device *pdev)
+static void xrp_remove(struct platform_device *pdev)
 {
-    return xrp_deinit(pdev);
+    xrp_deinit(pdev);
 }
 
 static int __maybe_unused xrp_suspend(struct device *dev)

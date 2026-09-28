@@ -17,7 +17,7 @@
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-ctrls.h>
 #include <isp_ctrl/hailo15_isp_ctrl.h>
-#include <stdbool.h>
+#include <linux/types.h>
 #include "hailo15-isp.h"
 #include "hailo15-isp-v4l.h"
 #include "hailo15-isp-hw.h"
@@ -385,7 +385,7 @@ static int hailo15_isp_get_rxw_subdev(struct v4l2_subdev *sd, struct v4l2_subdev
 	struct media_pad *pad = &isp_dev->pads[sink_pad_index];
 
 	if (pad && pad->entity) {
-		pad = media_entity_remote_pad(pad);
+		pad = media_pad_remote_pad_first(pad);
 	} else {
 		// could not find the rxwrapper pad - report and return error
 		pr_err("%s - could not find remote pad for isp pad %d\n", __func__, sink_pad_index);
@@ -589,7 +589,7 @@ static int hailo15_vsi_isp_qcap(struct v4l2_subdev *sd, void *arg)
 	struct hailo15_isp_device *isp_dev = isp_dev_from_v4l2_subdev(sd);
 	struct v4l2_capability *cap = (struct v4l2_capability *)arg;
 	/* SHOULD BE COPY_TO_USER */
-	strlcpy((char *)cap->driver, HAILO15_ISP_NAME, sizeof(cap->driver));
+	strscpy((char *)cap->driver, HAILO15_ISP_NAME, sizeof(cap->driver));
 	cap->bus_info[0] = isp_dev->id;
 	return 0;
 }
@@ -1532,7 +1532,7 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 		 isp_dev->mcm_mode == ISP_MCM_MODE_RAW_WRITE)) {
 		pad = &isp_dev->pads[sink_pad_index];
 		if (pad && pad->entity) {
-			pad = media_entity_remote_pad(pad);
+			pad = media_pad_remote_pad_first(pad);
 		} else {
 			pad = NULL;
 		}
@@ -1592,7 +1592,7 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 			goto disable_rdma;
 
 		if (path != ISP_MCM_RAW_OUT) {
-			del_timer_sync(&isp_dev->frame_timer[sink_pad_index]);
+			timer_delete_sync(&isp_dev->frame_timer[sink_pad_index]);
 			atomic_set(&isp_dev->streaming_started[sink_pad_index], 0);
 		}
 
@@ -1880,7 +1880,7 @@ static int fast_toggle_set_format(struct v4l2_subdev *sd,
 		|| toggle_type == TOGGLE_PLUTO_PREISP_HDR) {
 		pad = &isp_dev->pads[sink_pad_idx];
 		if (pad && pad->entity) {
-			pad = media_entity_remote_pad(pad);
+			pad = media_pad_remote_pad_first(pad);
 		} else {
 			pad = NULL;
 		}
@@ -1992,34 +1992,46 @@ static bool hailo15_isp_sensor_in_data_path(struct hailo15_isp_device *isp_dev)
 }
 
 static int hailo15_isp_g_frame_interval(struct v4l2_subdev *sd,
+					struct v4l2_subdev_state *state,
 					struct v4l2_subdev_frame_interval *fi)
 {
 	struct v4l2_subdev *sensor_sd =
 		hailo15_get_sensor_subdev(sd->v4l2_dev->mdev, sd->grp_id);
+	struct v4l2_subdev_frame_interval sensor_fi = *fi;
+	int ret;
 
 	if (!sensor_sd)
 		return -ENODEV;
-	return v4l2_subdev_call(sensor_sd, video, g_frame_interval, fi);
+	sensor_fi.pad = 0;
+	ret = v4l2_subdev_call(sensor_sd, pad, get_frame_interval, NULL, &sensor_fi);
+	if (!ret)
+		fi->interval = sensor_fi.interval;
+	return ret;
 }
 
 static int hailo15_isp_s_frame_interval(struct v4l2_subdev *sd,
+					struct v4l2_subdev_state *state,
 					struct v4l2_subdev_frame_interval *fi)
 {
 	struct hailo15_isp_device *isp_dev = isp_dev_from_v4l2_subdev(sd);
 	struct v4l2_subdev *sensor_sd =
 		hailo15_get_sensor_subdev(sd->v4l2_dev->mdev, sd->grp_id);
+	struct v4l2_subdev_frame_interval sensor_fi = *fi;
+	int ret;
 
 	if (!sensor_sd)
 		return -ENODEV;
 	if (!hailo15_isp_sensor_in_data_path(isp_dev))
-		return v4l2_subdev_call(sensor_sd, video, g_frame_interval, fi);
-	return v4l2_subdev_call(sensor_sd, video, s_frame_interval, fi);
+		return hailo15_isp_g_frame_interval(sd, state, fi);
+	sensor_fi.pad = 0;
+	ret = v4l2_subdev_call(sensor_sd, pad, set_frame_interval, NULL, &sensor_fi);
+	if (!ret)
+		fi->interval = sensor_fi.interval;
+	return ret;
 }
 
 static struct v4l2_subdev_video_ops hailo15_isp_video_ops = {
 	.s_stream = hailo15_isp_s_stream,
-	.s_frame_interval = hailo15_isp_s_frame_interval,
-	.g_frame_interval = hailo15_isp_g_frame_interval,
 };
 
 /**************************/
@@ -2106,7 +2118,7 @@ static int hailo15_isp_set_fmt(struct v4l2_subdev *sd,
 
 	pad = &isp_dev->pads[sink_pad_idx];
 	if (pad && pad->entity) {
-		pad = media_entity_remote_pad(pad);
+		pad = media_pad_remote_pad_first(pad);
 	} else {
 		pad = NULL;
 	}
@@ -2151,6 +2163,8 @@ static int hailo15_isp_set_fmt(struct v4l2_subdev *sd,
 }
 
 static const struct v4l2_subdev_pad_ops hailo15_isp_pad_ops = {
+	.set_frame_interval = hailo15_isp_s_frame_interval,
+	.get_frame_interval = hailo15_isp_g_frame_interval,
 	.set_fmt = hailo15_isp_set_fmt,
 };
 
@@ -3054,7 +3068,7 @@ out:
 	return ret;
 }
 
-static int hailo15_isp_remove(struct platform_device *pdev)
+static void hailo15_isp_remove(struct platform_device *pdev)
 {
 	struct hailo15_isp_device *isp_dev = platform_get_drvdata(pdev);
 	struct hailo15_dma_ctx *ctx = v4l2_get_subdevdata(&isp_dev->sd);
@@ -3062,7 +3076,6 @@ static int hailo15_isp_remove(struct platform_device *pdev)
 		ctx); /* need to stop interrupts before doing thath */
 	hailo15_clean_isp_device(isp_dev);
 	dev_info(isp_dev->dev, "hailo15 isp driver removed\n");
-	return 0;
 }
 
 static int hailo15_isp_hal_pad_stat_done(struct hailo15_isp_device *isp_dev,
@@ -3075,7 +3088,7 @@ static int hailo15_isp_hal_pad_stat_done(struct hailo15_isp_device *isp_dev,
     static_assert(sizeof(event.u.data) == sizeof(pad_stat->reserved),
         "event.u.data and pad_stat->reserved are not the same size");
 
-    pad = media_entity_remote_pad(&isp_dev->pads[pad_stat->pad]);
+    pad = media_pad_remote_pad_first(&isp_dev->pads[pad_stat->pad]);
     if (!pad)
         return -EINVAL;
 

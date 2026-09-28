@@ -5,4 +5,4 @@ obj-$(CONFIG_DMA_TRACKER) += mem_tracker/
 
 # Hailo15 drivers
 obj-$(CONFIG_VIDEO_HAILO15) += hailo15/
-
+obj-$(CONFIG_VIDEO_HAILO15_ENCODER) += encoder/

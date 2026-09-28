@@ -2,7 +2,11 @@
 
 Hailo15 EVB의 Linux 6.18.52 커널과 최소 rootfs를 Yocto Wrynose에서 빌드한다.
 레시피는 같은 저장소의 `kernel/`을 `externalsrc`로 사용하며, 저장된
-`hailo15.config`를 적용한다. ISP·DSP 전체 API 이식과 실장비 동작 검증은 포함하지 않는다.
+`hailo15.config`를 적용한다. IMX678·CSI·ISP·DSP 드라이버, VC8000E 인코더 모듈과
+1.12.1 DSP 펌웨어를 포함한다. 최소 rootfs에는 ISP 사용자 공간 서버를 포함하지 않는다.
+ISP 캡처에는 별도로 1.12.1 ISP 서버, 센서 플러그인과 보드에 맞는 보정 파일이 필요하다.
+DSP의 외부 PFN 매핑을 USERPTR로 전달하면 수명 보장을 위해 복사 경로를 사용한다.
+외부 영상 버퍼의 zero-copy 공유에는 DMA-BUF FD 인터페이스를 사용한다.
 
 ## 사용법
 
@@ -51,7 +55,8 @@ ART="$artifact_dir/self-test" ./verify-yocto-build.sh --self-test
 - 커널에 내장된 CPLD rev1/rev2/8-bit overlay를 적용한 SD/eMMC 활성화와 bus-width.
 - rootfs의 systemd init과 ttyS1 로그인 서비스 포함 여부. 로그인 자격 증명은 변경하지 않는다.
 - 모듈 아카이브와 rootfs 압축 무결성, ext4의 읽기 전용 `e2fsck -fn` 검사.
-- Hailo PHY·USB 모듈 4개의 모듈 아카이브·rootfs·manifest 포함 여부.
+- Hailo PHY·USB·인코더 모듈 5개의 모듈 아카이브·rootfs·manifest 포함 여부.
+- IMX678·CSI·ISP·DSP 핵심 심볼과 rootfs DSP 펌웨어 1.12.1의 SHA-256.
 - 배포 산출물의 SHA-256 기록.
 - `--self-test`: 설정 값 변경·누락과 DT 문자열·셀 배열 비교 및 속성 누락의 회귀 검사.
 

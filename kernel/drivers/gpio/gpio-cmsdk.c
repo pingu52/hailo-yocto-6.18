@@ -68,6 +68,7 @@ struct cmsdk_gpio {
 	/* Our GPIO instances share the same config registers.
 	   Please access these registers with caution. */
 	GPIO_MANAGER_CONFIG_t __iomem *config;
+	unsigned int irq_bank_shift;
 
 	struct gpio_chip gc;
 	struct irq_chip irq_chip;
@@ -319,7 +320,7 @@ static irqreturn_t cmsdk_irq_handler(int irq __maybe_unused, void *dev_id)
 		return IRQ_NONE;
 
 	writew(status, &gpio->base->INTCLEAR);
-	writel(status << gpio->gc.offset, &gpio->config->gpio_int_w1c);
+	writel(status << gpio->irq_bank_shift, &gpio->config->gpio_int_w1c);
 
 	for_each_set_bit(i, &status, gpio->gc.ngpio) {
 		unsigned int mapped_irq;
@@ -340,7 +341,7 @@ static irqreturn_t cmsdk_irq_handler(int irq __maybe_unused, void *dev_id)
 static void disable_gpio_irqs(struct cmsdk_gpio *cmsdk_gpio)
 {
 	writew(0xFFFF, &cmsdk_gpio->base->INTCLEAR);
-	writel(0xFFFF << cmsdk_gpio->gc.offset, &cmsdk_gpio->config->gpio_int_w1c);
+	writel(0xFFFF << cmsdk_gpio->irq_bank_shift, &cmsdk_gpio->config->gpio_int_w1c);
 	writew(0xFFFF, &cmsdk_gpio->base->INTENCLR);
 }
 
@@ -474,7 +475,10 @@ static int cmsdk_gpio_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	cmsdk_gpio->gc.offset = reg;
+	/* DT GPIO 번호는 각 뱅크의 0부터 시작하며 IRQ 비트 이동과 별개다. */
+	if (reg != 0 && reg != CMSDK_GPIO_MAX_NGPIO)
+		return -EINVAL;
+	cmsdk_gpio->irq_bank_shift = reg;
 	cmsdk_gpio->gc.request = gpiochip_generic_request;
 	cmsdk_gpio->gc.free = gpiochip_generic_free;
 	cmsdk_gpio->gc.base = -1;

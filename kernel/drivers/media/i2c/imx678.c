@@ -5,7 +5,7 @@
  * Copyright (C) 2021 Intel Corporation
  */
 #include "imx678.h"
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/videodev2.h>
 
 #include <linux/clk.h>
@@ -128,8 +128,6 @@ enum imx678_input_clk_rate_code {
 #define IMX678_TPG_COLOR_WIDTH 0x30e4 /*color width */
 
 #define NON_NEGATIVE(val) ((val) < 0 ? 0 : (val))
-#define MAX(val1, val2) ((val1) < (val2) ? (val2) : (val1))
-#define MIN(val1, val2) ((val1) < (val2) ? (val1) : (val2))
 
 static u32 imx678_reg_shutter[3] = {IMX678_REG_SHUTTER, IMX678_REG_SHUTTER_SHORT, IMX678_REG_SHUTTER_VERY_SHORT};
 static u32 imx678_reg_again[3] = {IMX678_REG_AGAIN, IMX678_REG_AGAIN_SHORT, IMX678_REG_AGAIN_VERY_SHORT};
@@ -4051,7 +4049,7 @@ static int imx678_get_pad_format(struct v4l2_subdev *sd,
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 		struct v4l2_mbus_framefmt *framefmt;
 
-		framefmt = v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
+		framefmt = v4l2_subdev_state_get_format(sd_state, fmt->pad);
 		fmt->format = *framefmt;
 	} else {
 		imx678_fill_pad_format(imx678, imx678->cur_mode, fmt);
@@ -4126,7 +4124,7 @@ static int imx678_set_pad_format(struct v4l2_subdev *sd,
 	imx678_fill_pad_format(imx678, mode, fmt);
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
+		*v4l2_subdev_state_get_format(sd_state, fmt->pad) = fmt->format;
 	} else {
 		memcpy(&imx678->curr_fmt, fmt, sizeof(struct v4l2_subdev_format));
 		if (compare_imx678_mode(mode, imx678->cur_mode)) {
@@ -4150,31 +4148,22 @@ out:
 static int imx678_init_pad_cfg(struct v4l2_subdev *sd,
 			       struct v4l2_subdev_state *sd_state)
 {
-	static bool initialized = false;
-	struct imx678_mode *supported_modes;
+	const struct imx678_mode *supported_modes;
 	struct imx678 *imx678 = to_imx678(sd);
 	struct v4l2_subdev_format fmt = { 0 };
 
-	/* Return immediately if pad has already been initialized */
-	if (initialized)
-		return 0;
-
-	if (imx678->streaming)
-		return 0;
-
+	mutex_lock(&imx678->mutex);
 	if (imx678->hdr_enabled)
-		supported_modes = (struct imx678_mode *)supported_hdr_modes;
+		supported_modes = supported_hdr_modes;
 	else
-		supported_modes = (struct imx678_mode *)supported_sdr_modes;
+		supported_modes = supported_sdr_modes;
 
-	fmt.which =
-		sd_state ? V4L2_SUBDEV_FORMAT_TRY : V4L2_SUBDEV_FORMAT_ACTIVE;
+	/* 파일마다 TRY 상태를 초기화하며 실행 중인 센서 모드는 바꾸지 않는다. */
 	imx678_fill_pad_format(imx678, &supported_modes[DEFAULT_MODE_IDX],
 			       &fmt);
-
-	initialized = true;
-
-	return imx678_set_pad_format(sd, sd_state, &fmt);
+	*v4l2_subdev_state_get_format(sd_state, 0) = fmt.format;
+	mutex_unlock(&imx678->mutex);
+	return 0;
 }
 
 static int imx678_setup_custom_values(struct imx678 *imx678)
@@ -4429,11 +4418,16 @@ imx678_find_nearest_frame_interval_mode(struct imx678 *imx678,
  * Return: 0 on success
  */
 static int imx678_s_frame_interval(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_state *state,
 				   struct v4l2_subdev_frame_interval *fi)
 {
 	struct imx678 *imx678 = to_imx678(sd);
 	struct imx678_mode const *mode;
 	int ret;
+
+	if (fi->which != V4L2_SUBDEV_FORMAT_ACTIVE || fi->pad ||
+	    !fi->interval.numerator || !fi->interval.denominator)
+		return -EINVAL;
 
 	ret = pm_runtime_resume_and_get(imx678->dev);
 	if (ret < 0)
@@ -4458,9 +4452,13 @@ static int imx678_s_frame_interval(struct v4l2_subdev *sd,
 }
 
 static int imx678_g_frame_interval(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_state *state,
 				   struct v4l2_subdev_frame_interval *fi)
 {
 	struct imx678 *imx678 = to_imx678(sd);
+
+	if (fi->which != V4L2_SUBDEV_FORMAT_ACTIVE || fi->pad)
+		return -EINVAL;
 
 	mutex_lock(&imx678->mutex);
 	fi->interval = imx678->cur_mode->frame_interval;
@@ -4670,12 +4668,11 @@ static long imx678_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 /* V4l2 subdevice ops */
 static const struct v4l2_subdev_video_ops imx678_video_ops = {
 	.s_stream = imx678_set_stream,
-	.s_frame_interval = imx678_s_frame_interval,
-	.g_frame_interval = imx678_g_frame_interval,
 };
 
 static const struct v4l2_subdev_pad_ops imx678_pad_ops = {
-	.init_cfg = imx678_init_pad_cfg,
+	.set_frame_interval = imx678_s_frame_interval,
+	.get_frame_interval = imx678_g_frame_interval,
 	.enum_mbus_code = imx678_enum_mbus_code,
 	.enum_frame_size = imx678_enum_frame_size,
 	.get_fmt = imx678_get_pad_format,
@@ -4684,6 +4681,10 @@ static const struct v4l2_subdev_pad_ops imx678_pad_ops = {
 
 static const struct v4l2_subdev_core_ops imx678_core_ops = {
 	.ioctl = imx678_ioctl,
+};
+
+static const struct v4l2_subdev_internal_ops imx678_internal_ops = {
+	.init_state = imx678_init_pad_cfg,
 };
 
 static const struct v4l2_subdev_ops imx678_subdev_ops = {
@@ -4957,6 +4958,7 @@ static int imx678_probe(struct i2c_client *client)
 	dev_info(imx678->dev, "probe started");
 
 	/* Initialize subdev */
+	imx678->sd.internal_ops = &imx678_internal_ops;
 	v4l2_i2c_subdev_init(&imx678->sd, client, &imx678_subdev_ops);
 
 	ret = imx678_parse_hw_config(imx678);
@@ -5047,7 +5049,7 @@ error_mutex_destroy:
  *
  * Return: 0 if successful, error code otherwise.
  */
-static int imx678_remove(struct i2c_client *client)
+static void imx678_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct imx678 *imx678 = to_imx678(sd);
@@ -5060,8 +5062,6 @@ static int imx678_remove(struct i2c_client *client)
 	pm_runtime_suspended(&client->dev);
 
 	mutex_destroy(&imx678->mutex);
-
-	return 0;
 }
 
 static const struct dev_pm_ops imx678_pm_ops = { SET_RUNTIME_PM_OPS(
@@ -5075,7 +5075,7 @@ static const struct of_device_id imx678_of_match[] = {
 MODULE_DEVICE_TABLE(of, imx678_of_match);
 
 static struct i2c_driver imx678_driver = {
-	.probe_new = imx678_probe,
+	.probe = imx678_probe,
 	.remove = imx678_remove,
 	.driver = {
 		.name = "imx678",

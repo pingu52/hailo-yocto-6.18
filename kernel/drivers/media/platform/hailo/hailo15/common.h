@@ -11,6 +11,9 @@
 #define FMT_MAX_PLANES 3
 #define BITS_IN_BYTE 8
 
+/* Hailo 5.15 ABI 값이다. 표준 ALAW 포맷과 중복되므로 Hailo 내부에만 둔다. */
+#define MEDIA_BUS_FMT_SRGGB12_1X32 0x3016
+
 #define HAILO15_MAX_BUFFERS 10
 #define HAILO15_NUM_P2A_BUFFERS 1
 #define HAILO15_EVENT_RESOURCE_DATA_SIZE (4096 * 4)
@@ -886,7 +889,7 @@ static inline int pixel_mux_grp_id_to_sink_pad_index(int grp_id)
 
 int hailo15_v4l2_notifier_bound(struct v4l2_async_notifier *,
 				struct v4l2_subdev *,
-				struct v4l2_async_subdev *,
+				struct v4l2_async_connection *,
 				struct media_entity *);
 const struct hailo15_video_fmt *hailo15_code_get_format(uint32_t code);
 const struct hailo15_video_fmt *hailo15_fourcc_get_format(uint32_t fourcc, __u8 num_planes);

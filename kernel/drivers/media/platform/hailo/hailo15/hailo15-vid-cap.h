@@ -31,7 +31,7 @@ struct hailo15_video_node {
 	int id;
 	struct video_device *video_dev;
 	struct v4l2_device *v4l2_dev;
-	struct v4l2_async_subdev *asd;
+	struct v4l2_async_connection *asd;
 	struct v4l2_subdev *direct_sd;
 	struct media_device *mdev;
 	struct v4l2_ctrl *ctrl;

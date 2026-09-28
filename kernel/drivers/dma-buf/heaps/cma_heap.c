@@ -21,6 +21,8 @@
 #include <linux/io.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
@@ -423,5 +425,53 @@ static int __init add_default_cma_heap(void)
 
 	return 0;
 }
-module_init(add_default_cma_heap);
+static int __init add_cma_heaps(void)
+{
+	struct cma *default_cma = dev_get_cma_area(NULL);
+	struct device_node *np;
+	int ret;
+
+	ret = add_default_cma_heap();
+	if (ret)
+		return ret;
+
+	/* 기존 영상 라이브러리가 사용하는 Hailo 전용 CMA 이름을 노출한다. */
+	for_each_node_with_property(np, "linux,cma-hailo") {
+		struct reserved_mem *rmem;
+		struct cma *cma;
+		const char *name;
+
+		if (!of_device_is_available(np))
+			continue;
+
+		if (of_property_read_bool(np, "linux,cma-soft-link")) {
+			cma = default_cma;
+			name = np->name;
+		} else {
+			if (!of_device_is_compatible(np, "shared-dma-pool")) {
+				ret = -EINVAL;
+				goto put_node;
+			}
+			rmem = of_reserved_mem_lookup(np);
+			cma = rmem ? rmem->priv : NULL;
+			if (cma && cma == default_cma)
+				continue;
+			name = cma ? cma_get_name(cma) : NULL;
+		}
+		if (!cma) {
+			ret = -ENODEV;
+			goto put_node;
+		}
+		ret = __add_cma_heap(cma, name);
+		if (ret)
+			goto put_node;
+	}
+	return 0;
+
+put_node:
+	pr_err("failed to add Hailo CMA heap %pOF: %d\n", np, ret);
+	of_node_put(np);
+	return ret;
+}
+module_init(add_cma_heaps);
 MODULE_DESCRIPTION("DMA-BUF CMA Heap");

@@ -4,7 +4,7 @@
 
 int hailo15_v4l2_notifier_bound(struct v4l2_async_notifier *notifier,
 				struct v4l2_subdev *source_subdev,
-				struct v4l2_async_subdev *asd,
+				struct v4l2_async_connection *asd,
 				struct media_entity *sink_entity)
 {
 	int ret;
@@ -165,7 +165,7 @@ struct v4l2_subdev *hailo15_get_csi2rx_subdev(struct media_device *mdev, int grp
 	}
 
 	pad = pixel_mux_grp_id_to_sink_pad_index(grp_id);
-	csi_pad = media_entity_remote_pad(&pixel_mux_sd->entity.pads[pad]);
+	csi_pad = media_pad_remote_pad_first(&pixel_mux_sd->entity.pads[pad]);
 	if (!csi_pad) {
 		pr_err("%s: no remote pad found for group id %d (pad %d)\n", __func__, grp_id, pad);
 		return NULL;
@@ -209,7 +209,7 @@ struct v4l2_subdev *hailo15_get_sensor_subdev(struct media_device *mdev, int grp
 
 	/* Iterate over the pads of the CSI subdev to find the sensor subdev */
 	for (i = 0; i < csi_sd->entity.num_pads; i++) {
-		sensor_pad = media_entity_remote_pad(&csi_sd->entity.pads[i]);
+		sensor_pad = media_pad_remote_pad_first(&csi_sd->entity.pads[i]);
 		if (!sensor_pad)
 			continue;
 

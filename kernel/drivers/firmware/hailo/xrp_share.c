@@ -326,51 +326,6 @@ static void xrp_alien_mapping_destroy(struct xrp_alien_mapping *alien_mapping)
     }
 }
 
-static long xvp_pfn_virt_to_phys(
-    struct xvp *xvp, struct vm_area_struct *vma, uintptr_t vaddr,
-    unsigned long size, phys_addr_t *paddr, struct xrp_alien_mapping *mapping)
-{
-    int ret;
-    unsigned long i;
-    unsigned long nr_pages = PFN_UP(vaddr + size) - PFN_DOWN(vaddr);
-    unsigned long pfn;
-
-    ret = follow_pfn(vma, vaddr, &pfn);
-    if (ret)
-        return ret;
-
-    *paddr = __pfn_to_phys(pfn) + (vaddr & ~PAGE_MASK);
- 
-    for (i = 1; i < nr_pages; ++i) {
-        unsigned long next_pfn;
-        phys_addr_t next_phys;
-
-        ret = follow_pfn(vma, vaddr + (i << PAGE_SHIFT), &next_pfn);
-        if (ret)
-            return ret;
-        if (next_pfn != pfn + 1) {
-            pr_debug("%s: non-contiguous physical memory\n", __func__);
-            return -EINVAL;
-        }
-        next_phys = __pfn_to_phys(next_pfn);
-        pfn = next_pfn;
-    }
-
-    if (!is_single_dma_lookup_buffer(*paddr, size)) {
-        pr_debug("%s: memory crossed 1GiB window\n", __func__);
-        return -EINVAL;
-    }
-
-    *mapping = (struct xrp_alien_mapping){
-        .vaddr = vaddr,
-        .size = size,
-        .paddr = *paddr,
-        .type = ALIEN_PFN_MAP,
-    };
-    pr_debug("%s: success, paddr: %pap\n", __func__, paddr);
-    return 0;
-}
-
 static long xvp_gup_virt_to_phys(
     struct xvp *xvp, uintptr_t vaddr, unsigned long size,
     phys_addr_t *paddr, struct xrp_alien_mapping *mapping)
@@ -596,6 +551,9 @@ long xrp_share_block(
     long rc = -EINVAL;
     struct xvp *xvp = filp->private_data;
 
+    if (!size || size > ULONG_MAX - vaddr)
+        return -EINVAL;
+
     vma = find_vma(mm, vaddr);
     if (!vma) {
         dev_err(
@@ -652,30 +610,20 @@ long xrp_share_block(
         struct xrp_alien_mapping *alien_mapping =
             &mapping->alien_mapping;
         unsigned long n_pages = PFN_UP(vaddr + size) - PFN_DOWN(vaddr);
+        bool needs_cache = !vma || vma_needs_cache_ops(vma);
 
         /* Otherwise this is alien allocation. */
         dev_dbg(
             xvp->dev, "%s: non-XVP allocation at vaddr: 0x%08lx\n",
             __func__, vaddr);
 
-        /*
-         * A range can only be mapped directly if it is either
-         * uncached or HW-specific cache operations can handle it.
-         */
-        if (vma && vma->vm_flags & (VM_IO | VM_PFNMAP)) {
-            rc = xvp_pfn_virt_to_phys(
-                    xvp, vma, vaddr, size, &phys, alien_mapping);
-            if (rc == 0 && vma_needs_cache_ops(vma) &&
-                !xrp_cacheable(xvp, PFN_DOWN(phys), n_pages)) {
-                dev_err(
-                    xvp->dev, "%s: needs unsupported cache mgmt\n", __func__);
-                rc = -EINVAL;
-            }
-        } else {
+        /* PFN 조회만으로는 비동기 DMA 동안 메모리 수명을 보장하지 못한다.
+         * 외부 PFN 매핑은 아래 복사 경로를 사용하며, zero-copy는 DMA-BUF FD로 한다.
+         * VMA 속성은 mmap 잠금을 풀기 전에 보관한다. */
+        if (!vma || !(vma->vm_flags & (VM_IO | VM_PFNMAP))) {
             mmap_read_unlock(mm);
             rc = xvp_gup_virt_to_phys(xvp, vaddr, size, &phys, alien_mapping);
-            if (rc == 0 &&
-                (!vma || vma_needs_cache_ops(vma)) &&
+            if (rc == 0 && needs_cache &&
                 !xrp_cacheable(xvp, PFN_DOWN(phys), n_pages)) {
                 dev_err(
                     xvp->dev, "%s: needs unsupported cache mgmt\n", __func__);
@@ -684,7 +632,7 @@ long xrp_share_block(
             }
             mmap_read_lock(mm);
         }
-        if (rc == 0 && vma && !vma_needs_cache_ops(vma))
+        if (rc == 0 && !needs_cache)
             do_cache = false;
 
         /*
@@ -762,7 +710,7 @@ long xrp_share_dmabuf(struct file *filp, int fd, unsigned long size, enum ioctl_
         goto l_buf_get;
     }
 
-    sgt = dma_buf_map_attachment(attach, xrp_dma_direction(flags));
+    sgt = dma_buf_map_attachment_unlocked(attach, xrp_dma_direction(flags));
     if (IS_ERR(sgt)) {
         dev_err(xvp->dev, "%s: dma_buf_map_attachment failed, err=%ld\n", __func__, PTR_ERR(sgt));
         ret = -EINVAL;
@@ -801,7 +749,7 @@ long xrp_share_dmabuf(struct file *filp, int fd, unsigned long size, enum ioctl_
     goto l_exit;
 
 l_buf_map:
-    dma_buf_unmap_attachment(attach, sgt, xrp_dma_direction(flags));
+    dma_buf_unmap_attachment_unlocked(attach, sgt, xrp_dma_direction(flags));
 l_buf_attach:
     dma_buf_detach(dmabuf, attach);
 l_buf_get:
@@ -872,7 +820,7 @@ static long xrp_unshare_dmabuf(struct xvp *xvp, struct xrp_mapping *mapping, enu
         // DMA_NONE is illegal direction for dma_buf_unmap_attachment
         direction = DMA_TO_DEVICE;
     }
-    dma_buf_unmap_attachment(attach, sgt, direction);
+    dma_buf_unmap_attachment_unlocked(attach, sgt, direction);
     dma_buf_detach(dmabuf, attach);
     dma_buf_put(dmabuf);
 

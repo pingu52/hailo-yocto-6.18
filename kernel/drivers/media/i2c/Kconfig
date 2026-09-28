@@ -277,6 +277,12 @@ config VIDEO_IMX415
 	  To compile this driver as a module, choose M here: the
 	  module will be called imx415.
 
+config VIDEO_IMX678
+	tristate "Sony IMX678 sensor support"
+	depends on OF_GPIO
+	help
+	  Hailo 영상 경로용 Sony IMX678 센서 드라이버를 활성화한다.
+
 config VIDEO_MAX9271_LIB
 	tristate
 

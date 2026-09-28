@@ -2350,7 +2350,7 @@ static int vvcam_fe_probe(struct platform_device *pdev)
 				return ret;
 			}
 		}
-		vvcam_fe_class = class_create(THIS_MODULE, VIVCAM_FE_NAME);
+		vvcam_fe_class = class_create(VIVCAM_FE_NAME);
 		if (IS_ERR(vvcam_fe_class)) {
 			pr_err("%s[%d]:class_create error!\n", __func__, __LINE__);
 			return -EINVAL;
@@ -2399,7 +2399,7 @@ static int vvcam_fe_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int vvcam_fe_remove(struct platform_device *pdev)
+static void vvcam_fe_remove(struct platform_device *pdev)
 {
 	int ret = 0;
 	struct vvcam_fe_driver_dev *pdriver_dev;
@@ -2422,7 +2422,6 @@ static int vvcam_fe_remove(struct platform_device *pdev)
 	if (fe_register_index == 0) {
 		class_destroy(pdriver_dev->class);
 	}
-	return ret;
 }
 
 static struct platform_driver vvcam_fe_driver = {

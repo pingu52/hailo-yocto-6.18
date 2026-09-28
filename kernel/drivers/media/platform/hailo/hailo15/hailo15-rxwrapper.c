@@ -1084,7 +1084,7 @@ static int get_remote_src_subdev(struct v4l2_subdev *sd, struct v4l2_subdev **o_
 		return -EINVAL;
 	}
 
-	remote_subdev_src_pad = media_entity_remote_pad(&hailo15_rxwrapper->pads[RXWRAPPER_SINK_PAD_0]);
+	remote_subdev_src_pad = media_pad_remote_pad_first(&hailo15_rxwrapper->pads[RXWRAPPER_SINK_PAD_0]);
 	if (!remote_subdev_src_pad) {
 		pr_err("%s - failed to get connected remote pad to subdev %s:pad[%d] , (ctx grp_id %d), aborting...\n",
 			__func__, sd->name, RXWRAPPER_SINK_PAD_0, sd->grp_id);
@@ -1223,7 +1223,7 @@ static int hailo15_rxwrapper_set_subdev_sensor_format(struct hailo15_rxwrapper_p
 	/* Get the pad */
 	pad = &hailo15_rxwrapper->pads[RXWRAPPER_SINK_PAD_0];
 	if (pad) {
-		pad = media_entity_remote_pad(pad);
+		pad = media_pad_remote_pad_first(pad);
 	}
 
 	if (pad == NULL) {
@@ -2372,7 +2372,7 @@ err_disable_pm:
 	return -EINVAL;
 }
 
-static int hailo15_rxwrapper_remove(struct platform_device *pdev)
+static void hailo15_rxwrapper_remove(struct platform_device *pdev)
 {
 	struct hailo15_rxwrapper_priv *hailo15_rxwrapper =
 		platform_get_drvdata(pdev);
@@ -2395,7 +2395,6 @@ static int hailo15_rxwrapper_remove(struct platform_device *pdev)
 
 	hailo15_rxwrapper_dma_ctx_clean_all(ctx);
 	kfree(ctx);
-	return 0;
 }
 
 static void trace_hailo15_driver_error(const char* driver_name, uint32_t err, char* fmt, ...) {

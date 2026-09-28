@@ -6,7 +6,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-subdev.h>
 #include <media/v4l2-async.h>
-#include <stdbool.h>
+#include <linux/types.h>
 #include "common.h"
 
 struct hailo15_media_device {

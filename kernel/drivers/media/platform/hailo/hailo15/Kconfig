@@ -2,7 +2,7 @@
 config VIDEO_HAILO15
 	bool "Hailo15 video Devices"
 	depends on MEDIA_SUPPORT
-	select VIDEO_V4L2
+	select VIDEO_DEV
 	select VIDEO_V4L2_SUBDEV_API
 	select V4L2_FWNODE
 	select VIDEOBUF2_DMA_CONTIG
@@ -15,8 +15,33 @@ config VIDEO_HAILO15
 
 if VIDEO_HAILO15
 
+config VIDEO_HAILO15_CSI2RX
+	tristate "Hailo15 Cadence CSI2 receiver"
+	depends on ARCH_HAILO15
+	depends on VIDEO_CADENCE_CSI2RX = n
+	select GENERIC_PHY
+	select GENERIC_PHY_MIPI_DPHY
+	help
+	  Hailo 전용 HDR, VC 선택 및 내부 D-PHY 연결을 지원한다.
+	  동일 DT 노드를 사용하는 범용 Cadence 드라이버와 함께 켜지 않는다.
+
+config VIDEO_HAILO15_DPHY
+	tristate "Hailo15 MIPI D-PHY"
+	select GENERIC_PHY
+	select GENERIC_PHY_MIPI_DPHY
+
 config VIDEO_HAILO15_VIDEO_CAPTURE
 	tristate "Hailo15 video capture device"
+
+config VIDEO_HAILO15_VIDEO_OUTPUT
+	tristate "Hailo15 video output device"
+
+config VIDEO_HAILO15_ENCODER
+	tristate "Hailo15 VC8000E encoder"
+	depends on ARCH_HAILO15
+	select DMA_SHARED_BUFFER
+	help
+	  Hailo 영상 라이브러리의 hx280enc 장치 ABI를 제공한다.
 
 config VIDEO_HAILO15_PIX_MUX
 	tristate "Hailo15 pixel-mux driver"

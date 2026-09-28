@@ -1,10 +1,14 @@
     vision_subsys: vision_subsys {
+        #address-cells = <2>;
+        #size-cells = <2>;
         power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_VISION_SUBSYS>;
         compatible = "simple-pm-bus";
         status = "disabled";
         ranges;
 
         csi2rx0: csi-bridge@7c011000{
+            #address-cells = <2>;
+            #size-cells = <2>;
             status = "disabled";
             compatible = "cdns,csi2rx";
             id = <0>;
@@ -43,6 +47,8 @@
         };
 
         csi2rx1: csi-bridge@7c015000 {
+            #address-cells = <2>;
+            #size-cells = <2>;
             /* Unsupported in current FPGA*/
             status = "disabled";
             compatible = "cdns,csi2rx";

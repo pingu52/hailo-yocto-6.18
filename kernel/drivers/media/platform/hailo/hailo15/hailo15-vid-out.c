@@ -124,9 +124,6 @@ static int _hailo15_try_fmt_vid_out(struct file *file, void *priv,
 	struct hailo15_video_out_node *vid_node = video_drvdata(file);
 	struct v4l2_pix_format_mplane *pix_mp = &f->fmt.pix_mp;
 	const struct hailo15_video_fmt *format = NULL;
-	struct v4l2_subdev_format fmt;
-	struct v4l2_subdev_state try_fmt;
-	struct v4l2_subdev_pad_config pad_cfg;
 	char fourcc_str[5];
 	int ret;
 
@@ -135,9 +132,6 @@ static int _hailo15_try_fmt_vid_out(struct file *file, void *priv,
 	       hailo15_fourcc_to_string(pix_mp->pixelformat, fourcc_str),
 	       pix_mp->num_planes);
 
-	memset(&fmt, 0, sizeof(fmt));
-	memset(&try_fmt, 0, sizeof(try_fmt));
-	memset(&pad_cfg, 0, sizeof(pad_cfg));
 
 	if (WARN_ON(!vid_node)) {
 		pr_err("%s - vid_node is NULL, returning -EINVAL\n", __func__);
@@ -323,7 +317,7 @@ static int hailo15_reqbufs(struct file *file, void *priv,
 		return ret;
 	}
 
-	pad = media_entity_remote_pad(&vid_node->pad);
+	pad = media_pad_remote_pad_first(&vid_node->pad);
 	req.pad = pad->index;
 
 	ret = hailo15_subdev_call(vid_node, core, ioctl, ISPIOC_V4L2_REQBUFS, &req);
@@ -440,13 +434,13 @@ static int hailo15_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
 		pr_err("%s - returning -EINVAL\n", __func__);
 		return -EINVAL;
 	}
-	if (q->num_buffers >= MAX_NUM_FRAMES) {
+	if (vb2_get_num_buffers(q) >= MAX_NUM_FRAMES) {
 		dev_info(vid_node->dev, "already allocated maximum buffers");
 		return -EINVAL;
 	}
 
-	if (*nbuffers > MAX_NUM_FRAMES - q->num_buffers)
-		*nbuffers = MAX_NUM_FRAMES - q->num_buffers;
+	if (*nbuffers > MAX_NUM_FRAMES - vb2_get_num_buffers(q))
+		*nbuffers = MAX_NUM_FRAMES - vb2_get_num_buffers(q);
 
 	format =
 		hailo15_fourcc_get_out_format(vid_node->fmt.fmt.pix_mp.pixelformat, vid_node->fmt.fmt.pix_mp.num_planes);
@@ -507,7 +501,7 @@ static int hailo15_video_out_node_buffer_init(struct vb2_buffer *vb)
 			vb2_dma_contig_plane_dma_addr(vb, plane);
 	}
 
-	pad = media_entity_remote_pad(&vid_node->pad);
+	pad = media_pad_remote_pad_first(&vid_node->pad);
 
 	if (!pad) {
 		dev_err(vid_node->dev,
@@ -708,9 +702,11 @@ static void hailo15_video_out_node_stop_streaming(struct vb2_queue *q)
 	 * This is safe because q->lock is held by vb2_core_streamoff,
 	 * preventing concurrent buf_queue calls, and the ISP is fully
 	 * quiesced after stream_cancel (mi_stopped, workqueues drained). */
-	for (i = 0; i < q->num_buffers; ++i) {
-		if (q->bufs[i]->state == VB2_BUF_STATE_ACTIVE)
-			vb2_buffer_done(q->bufs[i], VB2_BUF_STATE_ERROR);
+	for (i = 0; i < q->max_num_buffers; ++i) {
+		struct vb2_buffer *buffer = vb2_get_buffer(q, i);
+
+		if (buffer && buffer->state == VB2_BUF_STATE_ACTIVE)
+			vb2_buffer_done(buffer, VB2_BUF_STATE_ERROR);
 	}
 
 	trace_hailo15_vidout_stop_streaming(vid_node);
@@ -821,7 +817,7 @@ static int hailo15_video_out_node_queue_init(struct hailo15_video_out_node *vid_
 	vid_node->queue.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 	vid_node->queue.dev = vid_node->dev;
 	vid_node->queue.lock = &vid_node->buffer_mutex;
-	vid_node->queue.min_buffers_needed = MIN_BUFFERS_NEEDED;
+	vid_node->queue.min_queued_buffers = MIN_BUFFERS_NEEDED;
 	ret = vb2_queue_init(&vid_node->queue);
 	if (ret) {
 		return ret;
@@ -1165,7 +1161,7 @@ out:
 	return ret;
 }
 
-static int hailo15_video_remove(struct platform_device *pdev)
+static void hailo15_video_remove(struct platform_device *pdev)
 {
 	struct hailo15_vid_out_device *vid_dev;
 
@@ -1177,7 +1173,6 @@ static int hailo15_video_remove(struct platform_device *pdev)
 	vid_dev = platform_get_drvdata(pdev);
 	hailo15_video_device_destroy(vid_dev);
 	kfree(vid_dev);
-	return 0;
 }
 
 static const struct of_device_id hailo15_vid_out_of_match[] = {
